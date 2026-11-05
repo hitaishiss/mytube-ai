@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#101014">
+  <meta name="description" content="MyTube AI — your personal drama creation studio.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <title>MyTube AI</title>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="MyTube AI home">
+        <span class="brand-mark">M</span>
+        <span><strong>MyTube AI</strong><small>YOUR PERSONAL DRAMA STUDIO</small></span>
+      </a>
+      <button id="themeToggle" class="icon-btn" aria-label="Switch theme" title="Switch theme">☼</button>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="eyebrow"><span class="live-dot"></span> YOUR CREATIVE STUDIO</div>
+        <h1>Every great drama<br><em>starts with an idea.</em></h1>
+        <p>Turn a thought into a story, one creative decision at a time.</p>
+        <button id="newDramaBtn" class="primary-btn"><span>＋</span> Create a new drama</button>
+      </section>
+
+      <section class="chat-card">
+        <div class="section-kicker">AI STORY DIRECTOR</div>
+        <h2>What are we creating today?</h2>
+        <p class="muted">Describe your idea. Your story begins here.</p>
+        <form id="ideaForm">
+          <textarea id="ideaInput" rows="3" placeholder="A family drama about two sisters who discover a secret..." maxlength="2000"></textarea>
+          <div class="composer-bottom">
+            <span class="tiny muted">Your projects stay on this device.</span>
+            <button class="send-btn" type="submit">Start story <span>→</span></button>
+          </div>
+        </form>
+      </section>
+
+      <section class="section-block">
+        <div class="section-heading">
+          <div><div class="section-kicker">YOUR WORKSPACE</div><h2>Drama projects</h2></div>
+          <span id="projectCount" class="count-pill">0 projects</span>
+        </div>
+        <div id="projectList" class="project-grid"></div>
+        <div id="emptyState" class="empty-state">
+          <div class="empty-icon">✦</div>
+          <strong>Your next story belongs here.</strong>
+          <span>Create your first drama to get started.</span>
+        </div>
+      </section>
+
+      <section class="section-block utility-grid">
+        <button class="utility-card" id="archiveBtn"><span class="utility-icon">▤</span><span><strong>Archived dramas</strong><small>Keep finished projects out of the way</small></span><span class="chevron">›</span></button>
+        <button class="utility-card" id="trashBtn"><span class="utility-icon">⌫</span><span><strong>Recently deleted</strong><small>Restore projects before they expire</small></span><span class="chevron">›</span></button>
+        <button class="utility-card" id="backupBtn"><span class="utility-icon">⇧</span><span><strong>Backup & restore</strong><small>Export a copy or restore a backup</small></span><span class="chevron">›</span></button>
+      </section>
+    </main>
+    <footer>MYTUBE AI <span>•</span> PRIVATE CREATIVE WORKSPACE</footer>
+  </div>
+
+  <dialog id="projectDialog" class="modal">
+    <form id="projectForm" method="dialog">
+      <div class="modal-top"><span class="section-kicker">NEW PROJECT</span><button type="button" class="close-btn" data-close>×</button></div>
+      <h2>Give your drama a name.</h2>
+      <label for="projectName">Project title</label>
+      <input id="projectName" maxlength="80" placeholder="The Secret Between Us" required>
+      <label for="projectFormat">Format</label>
+      <select id="projectFormat"><option value="Vertical drama">Vertical drama (9:16)</option><option value="Horizontal drama">Horizontal drama (16:9)</option></select>
+      <label for="projectType">Story type</label>
+      <select id="projectType"><option>Original drama</option><option>Adapted / inspired drama</option><option>Drama fusion</option></select>
+      <button class="primary-btn full" type="submit">Create project</button>
+    </form>
+  </dialog>
+
+  <dialog id="detailDialog" class="modal wide-modal">
+    <div class="modal-top"><span class="section-kicker">PROJECT WORKSPACE</span><button class="close-btn" data-close>×</button></div>
+    <div id="detailContent"></div>
+  </dialog>
+
+  <dialog id="messageDialog" class="modal">
+    <div class="modal-top"><span class="section-kicker">MYTUBE AI</span><button class="close-btn" data-close>×</button></div>
+    <div id="messageContent"></div>
+  </dialog>
+
+  <input type="file" id="restoreFile" accept="application/json,.json" hidden>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>
