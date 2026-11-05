@@ -1,8 +1,30 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#111"><link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon.svg"><link rel="stylesheet" href="styles.css"><title>MyTube AI</title></head>
-<body><header><h2>🎬 MyTube AI</h2><button id="theme">Light / Dark</button></header><main>
-<h1>Your personal drama studio</h1><p>Plan stories, characters, pets, scenes, voices and music.</p>
-<section class="panel"><h2>Create a drama</h2><input id="title" placeholder="Drama title"><textarea id="idea" placeholder="Describe your drama idea..."></textarea><select id="format"><option>Vertical (9:16)</option><option>Horizontal (16:9)</option></select><button id="create">Create project</button></section>
-<section class="panel"><h2>Your projects</h2><div id="projects"></div></section>
-<section class="panel"><h2>Backup</h2><button id="backup">Export backup</button><label class="file">Restore backup <input id="restore" type="file" accept=".json"></label></section>
-</main><dialog id="editor"><button id="close" class="right">Close</button><h2 id="projectTitle"></h2><nav id="tabs"></nav><div id="content"></div></dialog><script src="app.js"></script></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#17151b"><meta name="description" content="MyTube AI personal drama production workspace">
+<link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon.svg">
+<title>MyTube AI Studio</title><link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top"><div><span class="clap">🎬</span><strong>MyTube AI</strong><small>PERSONAL DRAMA STUDIO</small></div><button id="themeBtn" class="ghost">Light / Dark</button></header>
+<main>
+<section class="hero"><p class="eyebrow">YOUR CREATIVE WORKSPACE</p><h1>Make your next drama.</h1><p>Plan stories, characters, scenes, voices, music and exports in one place.</p></section>
+<section class="panel">
+<h2>Create a drama</h2>
+<label>Drama title<input id="newTitle" placeholder="e.g. The Secret Heiress" maxlength="100"></label>
+<label>Story idea<textarea id="newIdea" placeholder="Describe the premise, characters, conflict and tone..." rows="4"></textarea></label>
+<div class="two"><label>Format<select id="newFormat"><option>Vertical (9:16)</option><option>Horizontal (16:9)</option></select></label><label>Story type<select id="newType"><option>Original drama</option><option>Inspired by a broad premise</option><option>Drama fusion (two sources I have rights to)</option></select></label></div>
+<button id="createBtn" class="primary">Create project</button>
+</section>
+<section class="panel"><div class="section-head"><h2>Your projects</h2><button id="backupBtn" class="secondary">Export backup</button></div><div id="projectList" class="project-list"></div><label class="restore">Restore backup<input type="file" id="restoreFile" accept="application/json"></label></section>
+<section class="panel notice"><h2>Studio status</h2><p>This build is a production-planning workspace. AI text/image/video/voice/music generation and video rendering are not connected yet. It will not pretend to generate media that it cannot generate.</p></section>
+</main>
+<dialog id="workspace">
+<div class="workspace-head"><div><p class="eyebrow">PROJECT WORKSPACE</p><h2 id="projectName"></h2></div><button id="closeWorkspace" class="ghost">Close</button></div>
+<nav id="tabs" class="tabs"></nav>
+<div id="workspaceContent"></div>
+</dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="app.js"></script><script>if('serviceWorker' in navigator) addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));</script>
+</body></html>
