@@ -18,7 +18,7 @@ function area(label,id,value="",placeholder="",rows=4){return `<label>${label}<t
 function btn(id,text,cls="primary"){return `<button id="${id}" class="${cls}">${text}</button>`}
 function draw(){if(!active)return;const p=active;$("tabs").innerHTML=tabs.map(t=>`<button data-tab="${esc(t)}" class="${t===tab?"active":""}">${esc(t)}</button>`).join("");document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;draw()});let h="";
 if(tab==="Overview")h=`<h3>Project overview</h3><p>${esc(p.idea||"No story idea added yet.")}</p><div class="grid2"><div class="card"><b>${p.scenes.length}</b><p>Scenes planned</p></div><div class="card"><b>${p.characters.length}</b><p>Characters / pets</p></div><div class="card"><b>${p.shorts.length}</b><p>Shorts planned</p></div><div class="card"><b>${esc(p.status)}</b><p>Production status</p></div></div><div class="warning">This is a planning workspace. Generation buttons are not connected to an AI media provider yet. Your project notes and settings save locally in this browser.</div>`;
-if(tab==="Script")h=`<h3>Script Studio</h3><p class="hint">Draft scenes and dialogue here. Use the Creative Director prompt to prepare a focused revision request.</p>${area("Full script","script",p.script,"Write scenes, action and dialogue...",12)}${btn("saveScript","Save script")}<div class="card"><h3>Creative Director</h3>${area("Revision instruction","revision","","e.g. Make the reveal more suspenseful, keep the character motivations consistent.",3)}${btn("copyRevision","Copy revision prompt","secondary")}</div>`;
+if(tab==="Script")h=`<h3>Script Studio</h3><p class="hint">Generate an original first draft with your connected local text model, then edit and approve it here.</p><div class="card"><h3>AI script generator</h3>${area("What should happen in this drama?","scriptPrompt",p.idea||"Create an original drama opening with a strong hook, clear character motivations and cinematic dialogue.","Describe the story, episode, scene, tone and any must-keep facts...",5)}<div class="card-actions">${btn("generateScript","Generate script")}</div><p id="scriptGenStatus" class="small">Requires a reachable backend and a running local text model.</p></div>${area("Full script","script",p.script,"Generated or manually written scenes and dialogue...",12)}${btn("saveScript","Save script")}<div class="card"><h3>Creative Director</h3>${area("Revision instruction","revision","","e.g. Make the reveal more suspenseful, keep the character motivations consistent.",3)}${btn("copyRevision","Copy revision prompt","secondary")}</div>`;
 if(tab==="Characters & Pets")h=`<h3>Create a character, pet or creature</h3>${field("Name","cname","","Character name")}<div class="two"><label>Type<select id="ctype">${["Human","Dog","Cat","Bird","Other pet","Fantasy creature"].map(x=>`<option>${x}</option>`).join("")}</select></label>${field("Story role","crole","","Lead, rival, companion...")}</div>${area("Appearance, wardrobe, personality and traits","cdesc","","Describe recognizable features, outfits and personality...",4)}${btn("addChar","Save character / pet")}<h3>Cast library</h3>${p.characters.map((c,i)=>`<div class="card"><b>${esc(c.name)}</b> · ${esc(c.type)}<p>${esc(c.role)} — ${esc(c.description)}</p><div class="card-actions"><button data-editchar="${i}" class="secondary">Edit</button><button data-delchar="${i}" class="danger">Delete</button></div></div>`).join("")||'<p class="empty">Your cast will appear here.</p>'}`;
 if(tab==="Story Bible")h=`<h3>Story Bible & continuity</h3><p class="hint">Keep facts consistent across scenes and episodes.</p>${area("Characters, relationships, backstories, locations, timeline, rules and unresolved mysteries","bible",p.bible,"Record facts that must remain consistent...",12)}${btn("saveBible","Save Story Bible")}`;
 if(tab==="Scenes")h=`<h3>Scene planner</h3>${field("Scene title","stitle","","Scene title")}<div class="two">${field("Location","slocation","","Where?")}<label>Camera<select id="scamera">${["Wide shot","Medium shot","Close-up","Over-the-shoulder","Tracking movement","Establishing shot"].map(x=>`<option>${x}</option>`).join("")}</select></label></div><div class="two"><label>Lighting<select id="slight">${["Natural","Soft","Low-key","Golden hour","Neon","Cinematic contrast"].map(x=>`<option>${x}</option>`).join("")}</select></label><label>Mood<select id="smood">${["Tense","Romantic","Mysterious","Joyful","Melancholic","Action","Hopeful"].map(x=>`<option>${x}</option>`).join("")}</select></label></div>${area("Action, dialogue and visual direction","sdesc","","What happens? Include blocking, emotion and sound...",4)}${btn("addScene","Add scene")}<h3>Scene list</h3>${p.scenes.map((s,i)=>`<div class="card"><b>${i+1}. ${esc(s.title)}</b><p>${esc(s.location)} · ${esc(s.camera)} · ${esc(s.lighting)} · ${esc(s.mood)}\n${esc(s.description)}</p><div class="card-actions"><button class="secondary" data-up="${i}">Move up</button><button class="secondary" data-down="${i}">Move down</button><button class="danger" data-delscene="${i}">Delete</button></div></div>`).join("")||'<p class="empty">Add your first scene.</p>'}`;
@@ -34,7 +34,36 @@ if(tab==="AI Engine")h=`<h3>AI Engine Connection</h3>
 if(tab==="Watermark")h=`<h3>Watermark settings</h3><p class="warning">These settings are saved; the watermark is not burned into video until rendering is connected.</p>${field("Watermark text","wmText",p.watermark.text,"MyTube AI")}<label>Position<select id="wmPos">${["Bottom right","Bottom left","Top right","Top left","Center"].map(x=>`<option ${p.watermark.position===x?"selected":""}>${x}</option>`).join("")}</select></label>${btn("saveWM","Save watermark settings")}`;
 $("workspaceContent").innerHTML=h;wire()}
 function wire(){const p=active,click=(id,fn)=>{const e=$(id);if(e)e.onclick=()=>{fn();persist();draw();toast("Saved.")}};
-click("saveScript",()=>p.script=$("script").value);click("saveBible",()=>p.bible=$("bible").value);
+click("saveScript",()=>p.script=$("script").value);
+const genScript=$("generateScript");
+if(genScript)genScript.onclick=async()=>{
+  const status=$("scriptGenStatus"),base=(localStorage.getItem("mytube-engine-url")||"").trim().replace(/\/$/,"");
+  const prompt=$("scriptPrompt").value.trim();
+  if(!base){status.textContent="Save your backend URL in AI Engine first.";return}
+  if(!prompt){status.textContent="Describe the story first.";return}
+  genScript.disabled=true;status.textContent="Submitting script job…";
+  try{
+    const created=await fetch(base+"/api/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({projectId:p.id,kind:"text",input:{prompt:"Write a complete original drama script draft for project: "+p.title+". Project idea: "+p.idea+". User direction: "+prompt+". Include a compelling opening, scene headings, action and dialogue. Preserve originality and internal continuity."},output:{}})});
+    if(!created.ok)throw new Error("Backend rejected the job ("+created.status+").");
+    const job=await created.json();status.textContent="Job queued…";
+    for(let i=0;i<450;i++){
+      await new Promise(r=>setTimeout(r,2000));
+      const rr=await fetch(base+"/api/jobs/"+encodeURIComponent(job.jobId));
+      if(!rr.ok)throw new Error("Could not read job status ("+rr.status+").");
+      const current=await rr.json();
+      status.textContent=(current.message||current.status)+" "+(current.progress||0)+"%";
+      if(current.status==="completed"){
+        const generated=current.output?.text||"";
+        if(!generated)throw new Error("Job completed without script text.");
+        p.script=generated;persist();$("script").value=generated;status.textContent="Script generated and saved. Review and edit it before approval.";toast("AI script draft generated.");break;
+      }
+      if(current.status==="failed")throw new Error(current.error||current.message||"Generation failed.");
+      if(i===449)throw new Error("This job is taking longer than expected. Its status remains saved on the backend.");
+    }
+  }catch(e){status.textContent="Script generation failed: "+e.message}
+  finally{genScript.disabled=false}
+};
+click("saveBible",()=>p.bible=$("bible").value);
 click("addChar",()=>{let name=$("cname").value.trim();if(!name){toast("Enter a character name.");return}p.characters.push({name,type:$("ctype").value,role:$("crole").value,description:$("cdesc").value});});
 click("addScene",()=>{let title=$("stitle").value.trim();if(!title){toast("Enter a scene title.");return}p.scenes.push({title,location:$("slocation").value,camera:$("scamera").value,lighting:$("slight").value,mood:$("smood").value,description:$("sdesc").value})});
 click("saveSong",()=>p.song={title:$("songTitle").value,mood:$("songMood").value,brief:$("songBrief").value,lyrics:$("songLyrics").value});
