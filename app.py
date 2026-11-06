@@ -5,6 +5,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 from fastapi import FastAPI, HTTPException, Header
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -64,19 +65,12 @@ def ollama_status():
         return {"available": False, "model": TEXT_MODEL, "installed": False}
 
 def ollama_generate(prompt: str, system: str = ""):
-    payload={
-        "model": TEXT_MODEL,
-        "prompt": prompt,
-        "system": system,
-        "stream": False,
-        "keep_alive": "10m",
-        "options": {"num_predict": 384, "temperature": 0.7}
-    }
+    payload={"model":TEXT_MODEL,"prompt":prompt,"system":system,"stream":False}
     req=Request(OLLAMA_URL.rstrip("/")+"/api/generate",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type":"application/json"})
     try:
-        with urlopen(req, timeout=1800) as r:
+        with urlopen(req, timeout=900) as r:
             data=json.loads(r.read().decode("utf-8"))
         result=(data.get("response") or "").strip()
         if not result:
@@ -165,3 +159,7 @@ def list_jobs(projectId: str | None = None, authorization: str | None = Header(d
         else:
             rows=c.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100").fetchall()
     return [job_dict(r) for r in rows]
+
+# Serve the studio and API from the same origin so the user never enters a backend URL.
+STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+app.mount("/", StaticFiles(directory=STUDIO_DIR, html=True), name="studio")
