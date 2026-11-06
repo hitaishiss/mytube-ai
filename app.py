@@ -64,12 +64,19 @@ def ollama_status():
         return {"available": False, "model": TEXT_MODEL, "installed": False}
 
 def ollama_generate(prompt: str, system: str = ""):
-    payload={"model":TEXT_MODEL,"prompt":prompt,"system":system,"stream":False}
+    payload={
+        "model": TEXT_MODEL,
+        "prompt": prompt,
+        "system": system,
+        "stream": False,
+        "keep_alive": "10m",
+        "options": {"num_predict": 384, "temperature": 0.7}
+    }
     req=Request(OLLAMA_URL.rstrip("/")+"/api/generate",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type":"application/json"})
     try:
-        with urlopen(req, timeout=900) as r:
+        with urlopen(req, timeout=1800) as r:
             data=json.loads(r.read().decode("utf-8"))
         result=(data.get("response") or "").strip()
         if not result:
