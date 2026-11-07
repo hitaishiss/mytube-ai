@@ -39,7 +39,7 @@ const genScript=$("generateScript");
 if(genScript)genScript.onclick=async()=>{
   const status=$("scriptGenStatus"),base=(window.MYTUBE_API_BASE||window.location.origin).trim().replace(/\/$/,"");
   const prompt=$("scriptPrompt").value.trim();
-  if(!base){status.textContent="Save your backend URL in AI Engine first.";return}
+  
   if(!prompt){status.textContent="Describe the story first.";return}
   genScript.disabled=true;status.textContent="Submitting script job…";
   try{
@@ -79,10 +79,8 @@ document.querySelectorAll("[data-editchar]").forEach(b=>b.onclick=()=>{let c=p.c
 document.querySelectorAll("[data-delscene]").forEach(b=>b.onclick=()=>{p.scenes.splice(+b.dataset.delscene,1);persist();draw()});
 document.querySelectorAll("[data-delshort]").forEach(b=>b.onclick=()=>{p.shorts.splice(+b.dataset.delshort,1);persist();draw()});
 document.querySelectorAll("[data-up]").forEach(b=>b.onclick=()=>{let i=+b.dataset.up;if(i){[p.scenes[i-1],p.scenes[i]]=[p.scenes[i],p.scenes[i-1]];persist();draw()}});
-if($("engineUrl"))$("engineUrl").value=localStorage.getItem("mytube-engine-url")||"";
-if($("saveEngine"))$("saveEngine").onclick=()=>{const u=$("engineUrl").value.trim();if(u&&!u.startsWith("https://")){toast("Use an HTTPS backend URL.");return}localStorage.setItem("mytube-engine-url",u);toast("Endpoint saved on this device.")};
 const engineStatus=$("engineStatus");
-async function checkEngine(){if(!engineStatus)return;engineStatus.textContent="Connecting…";try{const r=await fetch((window.MYTUBE_API_BASE||location.origin)+"/health",{cache:"no-store"});if(!r.ok)throw Error();const d=await r.json();const t=d.adapters?.text;engineStatus.textContent=d.status==="ok"?(t?.installed?"Connected · local text model ready.":"Connected · text model not ready."):"Engine responded but is not ready."}catch{engineStatus.textContent="Engine offline. Reopen this studio when its Codespace is running."}}
+async function checkEngine(){if(!engineStatus)return;engineStatus.textContent="Connecting…";try{const r=await fetch(location.origin+"/health",{cache:"no-store"});if(!r.ok)throw Error();const d=await r.json();const t=d.adapters?.text;engineStatus.textContent=d.status==="ok"?(t?.installed?"Connected · local text model ready.":"Connected · text model not ready."):"Engine responded but is not ready."}catch{engineStatus.textContent="Engine offline. Reopen this studio when its Codespace is running."}}
 if($("testEngine"))$("testEngine").onclick=checkEngine;
 checkEngine();document.addEventListener("visibilitychange",()=>{if(!document.hidden)checkEngine()});
 document.querySelectorAll("[data-down]").forEach(b=>b.onclick=()=>{let i=+b.dataset.down;if(i<p.scenes.length-1){[p.scenes[i+1],p.scenes[i]]=[p.scenes[i],p.scenes[i+1]];persist();draw()}});

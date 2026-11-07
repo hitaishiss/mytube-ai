@@ -5,6 +5,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 from fastapi import FastAPI, HTTPException, Header
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -17,7 +18,8 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 ).split(",") if x.strip()]
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
-app = FastAPI(title="MyTube AI private backend", version="0.2.0")
+STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+app = FastAPI(title="MyTube AI private backend", version="0.3.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -64,23 +66,39 @@ def ollama_status():
     except Exception:
         return {"available": False, "model": TEXT_MODEL, "installed": False}
 
-def ollama_generate(prompt: str, system: str = ""):
-    payload={"model":TEXT_MODEL,"prompt":prompt,"system":system,"stream":False}
-    req=Request(OLLAMA_URL.rstrip("/")+"/api/generate",
+def ollama_generate(prompt: str, system: str = "", progress_callback=None):
+    payload = {
+        "model": TEXT_MODEL, "prompt": prompt, "system": system,
+        "stream": True, "keep_alive": "10m",
+        "options": {"num_predict": 900, "num_ctx": 4096, "temperature": 0.7}
+    }
+    req = Request(OLLAMA_URL.rstrip("/") + "/api/generate",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type":"application/json"})
+        headers={"Content-Type": "application/json"})
+    parts = []
     try:
-        with urlopen(req, timeout=900) as r:
-            data=json.loads(r.read().decode("utf-8"))
-        result=(data.get("response") or "").strip()
+        with urlopen(req, timeout=900) as response:
+            for line in response:
+                if not line.strip():
+                    continue
+                item = json.loads(line.decode("utf-8"))
+                if item.get("error"):
+                    raise RuntimeError(item["error"])
+                piece = item.get("response", "")
+                if piece:
+                    parts.append(piece)
+                    if progress_callback:
+                        progress_callback("".join(parts))
+                if item.get("done"):
+                    break
+        result = "".join(parts).strip()
         if not result:
             raise RuntimeError("The local model returned an empty response.")
         return result
     except HTTPError as e:
-        detail=e.read().decode("utf-8","replace")[:500]
-        raise RuntimeError(f"Local model error ({e.code}): {detail}")
+        raise RuntimeError(f"Local model error ({e.code}): " + e.read().decode("utf-8", "replace")[:500])
     except URLError as e:
-        raise RuntimeError("Cannot reach Ollama. Install/start Ollama and download the configured model.")
+        raise RuntimeError("Cannot reach Ollama at " + OLLAMA_URL + ": " + str(e))
 
 def update_job(job_id, **values):
     values["updated_at"]=now()
@@ -90,21 +108,27 @@ def update_job(job_id, **values):
 
 def run_job(job_id, kind, inp):
     try:
-        update_job(job_id,status="processing",progress=10,message="Preparing generation…")
+        update_job(job_id, status="processing", progress=5, message="Preparing generation…")
         if kind != "text":
-            raise RuntimeError(f"The {kind} adapter is not installed yet. This job is safely recorded but no media was generated.")
-        prompt=str(inp.get("prompt") or inp.get("idea") or "").strip()
+            raise RuntimeError(f"The {kind} adapter is not installed in this build.")
+        prompt = str(inp.get("prompt") or inp.get("idea") or "").strip()
         if not prompt:
             raise RuntimeError("Add a prompt or story idea before generating.")
-        system=str(inp.get("system") or
-            "You are MyTube AI's drama-writing assistant. Create original material. "
-            "Respect the supplied story bible and continuity. Do not imitate living writers.")
-        update_job(job_id,progress=35,message="Generating with the configured local text model…")
-        result=ollama_generate(prompt,system)
-        update_job(job_id,status="completed",progress=100,message="Text generation completed.",
-                   output_json=json.dumps({"text":result},ensure_ascii=False),error=None)
+        system = str(inp.get("system") or
+            "You are MyTube AI's original drama-writing assistant. Write compelling "
+            "scenes with clear motivations, natural dialogue and continuity.")
+        update_job(job_id, progress=10, message="Connecting to local model…")
+        def on_piece(text):
+            progress = min(95, 10 + len(text) // 100)
+            update_job(job_id, progress=progress,
+                       message=f"Generating script · {len(text)} characters received…")
+        result = ollama_generate(prompt, system, on_piece)
+        update_job(job_id, status="completed", progress=100,
+                   message="Script generation completed.",
+                   output_json=json.dumps({"text": result}, ensure_ascii=False), error=None)
     except Exception as e:
-        update_job(job_id,status="failed",progress=0,message="Generation did not complete.",error=str(e))
+        update_job(job_id, status="failed", progress=0,
+                   message="Generation failed.", error=str(e))
 
 def job_dict(row):
     d=dict(row)
@@ -114,9 +138,9 @@ def job_dict(row):
     d["createdAt"]=d.pop("created_at"); d["updatedAt"]=d.pop("updated_at")
     return d
 
-@app.get("/")
+@app.get("/", include_in_schema=False)
 def root():
-    return {"message":"MyTube AI backend is running","health":"/health","docs":"/docs"}
+    return FileResponse(os.path.join(STUDIO_DIR, "index.html"))
 
 @app.get("/health")
 def health():
@@ -160,6 +184,5 @@ def list_jobs(projectId: str | None = None, authorization: str | None = Header(d
             rows=c.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100").fetchall()
     return [job_dict(r) for r in rows]
 
-# Serve the studio and API from the same origin so the user never enters a backend URL.
-STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# Serve CSS, JS, icons and manifest after explicit API routes.
 app.mount("/", StaticFiles(directory=STUDIO_DIR, html=True), name="studio")
