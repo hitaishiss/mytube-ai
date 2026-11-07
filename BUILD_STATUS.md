@@ -1,23 +1,14 @@
-MyTube AI Consolidated Release 1.1
+# Build status — 1.4.0
 
-Implemented:
-- Local Ollama text generation and saved jobs
-- Production Workflow tab: script-to-production-pack generation
-- Story/cast continuity notes, scene breakdowns, visual prompts, audio cues, five Shorts concepts, bilingual subtitle draft fields
-- Persistent media upload/download
-- FFmpeg MP4 assembly, audio muxing, watermark and export status
-- Engine capability reporting and optional ComfyUI/provider adapters
-- Browser project backup/restore
+Verified in this build:
+- Python syntax compilation for backend modules.
+- JavaScript syntax check.
+- FastAPI health route returns version 1.4.0.
+- SRT subtitle endpoint smoke test returns correctly formatted timed captions.
 
-Verified here:
-- Python and JavaScript syntax
-- FastAPI health
-- Upload -> FFmpeg render -> status -> MP4 download
-- Production job API acceptance
-- ZIP integrity
+Not verified / external dependencies:
+- Live ComfyUI generation, video generation, TTS, or music generation (no provider credentials/services are bundled).
+- Full production pipeline from script through generated media.
+- Deployment to the user's GitHub Pages or Codespace.
 
-Not bundled/claimed active:
-- Image/video/TTS/music model weights or services
-- External provider credentials
-- Live Codespace deployment verification
-- Fully automated generated-media pipeline
+This release adds backend job dispatch for configured media providers; it does not bundle model weights or claim those providers are active.

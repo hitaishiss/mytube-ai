@@ -26,7 +26,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="1.0.0")
+app = FastAPI(title="MyTube AI private backend", version="1.4.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -116,11 +116,25 @@ def update_job(job_id, **values):
 def run_job(job_id, kind, inp):
     try:
         update_job(job_id, status="processing", progress=5, message="Preparing generation…")
-        if kind not in ("text", "production"):
-            raise RuntimeError(f"The {kind} adapter is not installed or configured. Check /health for engine status.")
         prompt = str(inp.get("prompt") or inp.get("idea") or "").strip()
         if not prompt:
             raise RuntimeError("Add a prompt or story idea before generating.")
+        if kind in ("image", "video", "voice", "music"):
+            update_job(job_id, progress=15, message=f"Submitting {kind} request to configured engine…")
+            if kind == "image":
+                from backend.media_engines import comfyui_submit
+                result = comfyui_submit(prompt, inp.get("workflow"))
+            else:
+                from backend.media_engines import configured_provider_submit
+                env = {"video":"MYTUBE_VIDEO_API_URL", "voice":"MYTUBE_TTS_API_URL", "music":"MYTUBE_MUSIC_API_URL"}[kind]
+                label = {"video":"Video", "voice":"Speech", "music":"Music"}[kind]
+                result = configured_provider_submit(env, label, {"projectId": inp.get("projectId"), "prompt": prompt, "input": inp})
+            update_job(job_id, status="completed", progress=100,
+                       message=f"{kind.title()} request accepted by configured engine.",
+                       output_json=json.dumps(result, ensure_ascii=False), error=None)
+            return
+        if kind not in ("text", "production"):
+            raise RuntimeError(f"Unsupported job kind: {kind}")
         system = str(inp.get("system") or
             "You are MyTube AI's original drama-writing assistant. Write compelling "
             "scenes with clear motivations, natural dialogue and continuity.")
@@ -177,7 +191,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"1.0.0",
+    return {"status":"ok","engine":"MyTube AI","version":"1.4.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,
@@ -219,6 +233,32 @@ def list_jobs(projectId: str | None = None, authorization: str | None = Header(d
         else:
             rows=c.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100").fetchall()
     return [job_dict(r) for r in rows]
+
+
+class SubtitleCue(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    text: str = Field(min_length=1, max_length=2000)
+
+class SubtitleIn(BaseModel):
+    cues: list[SubtitleCue] = Field(min_length=1, max_length=2000)
+    format: str = Field(default="srt", pattern="^(srt|vtt)$")
+
+@app.post("/api/subtitles")
+def create_subtitles(body: SubtitleIn, authorization: str | None = Header(default=None)):
+    check_auth(authorization)
+    def stamp(seconds, comma=True):
+        ms = max(0, int(round(seconds * 1000)))
+        h, rem = divmod(ms, 3600000); m, rem = divmod(rem, 60000); sec, milli = divmod(rem, 1000)
+        sep = "," if comma else "."
+        return f"{h:02d}:{m:02d}:{sec:02d}{sep}{milli:03d}"
+    rows = []
+    if body.format == "vtt": rows.append("WEBVTT\n")
+    for i, cue in enumerate(body.cues, 1):
+        if cue.end <= cue.start: raise HTTPException(status_code=422, detail=f"Cue {i} end must be after start.")
+        rows.extend(([str(i)] if body.format == "srt" else []) +
+                    [f"{stamp(cue.start, body.format == 'srt')} --> {stamp(cue.end, body.format == 'srt')}", cue.text.strip(), ""])
+    return {"format": body.format, "content": "\n".join(rows), "cueCount": len(body.cues)}
 
 
 class RenderIn(BaseModel):
@@ -281,7 +321,7 @@ def render_video(body: RenderIn, authorization: str | None = Header(default=None
 
 
 def _render_worker(clips, audios, body, output):
-    # Normalize and concatenate clips; mux the first selected audio track.
+    # Normalize and concatenate clips; mix all selected audio tracks.
     work=tempfile.mkdtemp(prefix="mytube-render-")
     try:
         w,h={"720p":(1280,720),"1080p":(1920,1080),"4K":(3840,2160)}[body.resolution]
@@ -298,14 +338,19 @@ def _render_worker(clips, audios, body, output):
         merged=os.path.join(work,"merged.mp4")
         subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i",concat,"-c","copy",merged],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=7200)
         cmd=["ffmpeg","-y","-i",merged]
-        if audios: cmd += ["-i",audios[0]]
+        for audio in audios:
+            cmd += ["-i",audio]
         if body.watermark:
             # Escape drawtext metacharacters; never interpret user text as a filter expression.
             txt=body.watermark.replace("\\","\\\\").replace(":","\\:").replace("'","\\'").replace("%","\\%")
             cmd += ["-vf",f"drawtext=text='{txt}':x=w-tw-24:y=h-th-24:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.45"]
         cmd += ["-c:v","libx264","-preset","medium" if body.preset=="High Quality" else "veryfast","-crf","18" if body.preset=="High Quality" else "23" if body.preset=="Balanced" else "28"]
-        if audios: cmd += ["-map","0:v:0","-map","1:a:0","-c:a","aac","-b:a","192k","-shortest"]
-        else: cmd += ["-an"]
+        if audios:
+            audio_inputs="".join(f"[{i+1}:a:0]" for i in range(len(audios)))
+            filter_complex=audio_inputs+f"amix=inputs={len(audios)}:duration=longest:dropout_transition=2[aout]"
+            cmd += ["-filter_complex",filter_complex,"-map","0:v:0","-map","[aout]","-c:a","aac","-b:a","192k"]
+        else:
+            cmd += ["-an"]
         cmd += ["-movflags","+faststart",output]
         subprocess.run(cmd,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=7200)
     except Exception as exc:
@@ -349,6 +394,51 @@ def generate_image(body: ImageIn, authorization: str | None = Header(default=Non
     from backend.media_engines import comfyui_submit
     try: return comfyui_submit(body.prompt, body.workflow)
     except Exception as e: raise HTTPException(status_code=503, detail=str(e))
+
+@app.get("/api/engines/image/{prompt_id}")
+def image_job_status(prompt_id: str, authorization: str | None = Header(default=None)):
+    check_auth(authorization)
+    from backend.media_engines import comfyui_history
+    try:
+        history = comfyui_history(prompt_id)
+        item = history.get(prompt_id)
+        if not item:
+            return {"promptId":prompt_id,"status":"processing","outputs":[]}
+        outputs=[]
+        for node_id, node in (item.get("outputs") or {}).items():
+            for image_item in node.get("images",[]):
+                outputs.append({"nodeId":node_id,"filename":image_item.get("filename"),
+                    "subfolder":image_item.get("subfolder",""),"type":image_item.get("type","output")})
+        status = item.get("status",{})
+        completed = bool(status.get("completed")) or bool(outputs)
+        return {"promptId":prompt_id,"status":"completed" if completed else "processing",
+                "outputs":outputs,"messages":status.get("messages",[])}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+@app.get("/api/engines/image/{prompt_id}/output/{index}")
+def image_job_output(prompt_id: str, index: int, authorization: str | None = Header(default=None)):
+    check_auth(authorization)
+    from backend.media_engines import comfyui_history, comfyui_fetch_image
+    from fastapi.responses import Response
+    try:
+        history = comfyui_history(prompt_id)
+        item = history.get(prompt_id)
+        if not item: raise HTTPException(status_code=404, detail="Image job is not complete.")
+        outputs=[]
+        for node_id, node in (item.get("outputs") or {}).items():
+            for image_item in node.get("images",[]):
+                outputs.append(image_item)
+        if index < 0 or index >= len(outputs): raise HTTPException(status_code=404, detail="Image output not found.")
+        image_item=outputs[index]
+        content, content_type = comfyui_fetch_image(image_item.get("filename",""),
+            image_item.get("subfolder",""), image_item.get("type","output"))
+        return Response(content=content, media_type=content_type,
+            headers={"Content-Disposition":'inline; filename="mytube-generated-image"'})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 @app.post("/api/engines/video")
 def generate_video(body: ProviderIn, authorization: str | None = Header(default=None)):

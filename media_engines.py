@@ -60,3 +60,29 @@ def configured_provider_submit(env_name, label, payload):
     headers = {"Authorization":"Bearer "+token} if token else {}
     result = _json_request(url + "/generate", payload, timeout=120, headers=headers)
     return {"provider":label,"result":result}
+
+
+def comfyui_history(prompt_id):
+    url = os.getenv("COMFYUI_URL","").rstrip("/")
+    if not url: raise RuntimeError("Set COMFYUI_URL to enable ComfyUI.")
+    if not prompt_id or not all(c in "0123456789abcdef-" for c in prompt_id.lower()):
+        raise ValueError("Invalid ComfyUI prompt ID.")
+    return _json_request(url + "/history/" + prompt_id, timeout=15)
+
+def comfyui_fetch_image(filename, subfolder="", image_type="output"):
+    """Fetch a ComfyUI image through the private backend; blocks path traversal."""
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+    url = os.getenv("COMFYUI_URL","").rstrip("/")
+    if not url: raise RuntimeError("Set COMFYUI_URL to enable ComfyUI.")
+    if not filename or "/" in filename or "\\\\" in filename or filename in (".",".."):
+        raise ValueError("Invalid image filename.")
+    if subfolder and (subfolder.startswith("/") or ".." in subfolder.split("/") or "\\\\" in subfolder):
+        raise ValueError("Invalid image subfolder.")
+    query = urlencode({"filename":filename,"subfolder":subfolder,"type":image_type})
+    req = Request(url + "/view?" + query, headers={"Accept":"image/*"})
+    with urlopen(req, timeout=60) as response:
+        content_type = response.headers.get("Content-Type","application/octet-stream")
+        if not content_type.startswith("image/"):
+            raise RuntimeError("ComfyUI returned a non-image output.")
+        return response.read(), content_type
