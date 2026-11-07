@@ -125,11 +125,21 @@ def run_job(job_id, kind, inp):
             "You are MyTube AI's original drama-writing assistant. Write compelling "
             "scenes with clear motivations, natural dialogue and continuity.")
         update_job(job_id, progress=10, message="Connecting to local model…")
+        # Throttle SQLite writes: Ollama can stream hundreds of small chunks.
+        # Updating the jobs table for every chunk creates needless lock/IO pressure
+        # and can interrupt long generations in constrained Codespaces.
+        last_progress = {"chars": 0, "time": time.monotonic()}
         def on_piece(text):
-            progress = min(95, 10 + len(text) // 100)
-            update_job(job_id, progress=progress,
-                       message=f"Generating script · {len(text)} characters received…")
+            now_mono = time.monotonic()
+            chars = len(text)
+            if chars - last_progress["chars"] >= 600 or now_mono - last_progress["time"] >= 3:
+                progress = min(95, 10 + chars // 100)
+                update_job(job_id, progress=progress,
+                           message=f"Generating script · {chars} characters received…")
+                last_progress["chars"] = chars
+                last_progress["time"] = now_mono
         result = ollama_generate(prompt, system, on_piece)
+        # Persist final progress and output together only after Ollama completes.
         update_job(job_id, status="completed", progress=100,
                    message="Script generation completed.",
                    output_json=json.dumps({"text": result}, ensure_ascii=False), error=None)
