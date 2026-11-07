@@ -1,7 +1,12 @@
-MYTUBE AI — CONSOLIDATED ENGINE v0.5
+MYTUBE AI — CONSOLIDATED RELEASE 1.0
 
-Targeted fix for the 35% generation stall: the previous backend wrote progress to SQLite for every Ollama stream chunk. This release throttles progress writes to reduce database lock and I/O pressure during long generations.
+This package supersedes the v0.5 files. It includes the existing studio UI and
+backend plus the optional image/video/speech/music engine adapter routes.
 
-Apply by extracting this ZIP into the existing repository root and replacing files. Then restart the backend with: bash start.sh
+IMPORTANT: This is an integration-ready release, not a bundle of AI models.
+Text generation and FFmpeg rendering can run locally when their dependencies are
+installed. Image generation requires a configured ComfyUI server and workflow.
+Video, speech, and music require compatible private provider endpoints.
 
-Text generation uses local Ollama qwen2.5:3b. Image, video, voice and music engines are still not connected. No paid API or billing is enabled.
+See ENGINE_INTEGRATION.md before configuring optional engines.
+Keep API tokens in Codespaces secrets/environment variables, never in frontend files.

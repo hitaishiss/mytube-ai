@@ -26,7 +26,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="0.3.0")
+app = FastAPI(title="MyTube AI private backend", version="1.0.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -55,7 +55,7 @@ init_db()
 
 class JobIn(BaseModel):
     projectId: str = Field(min_length=1, max_length=120)
-    kind: str = Field(pattern="^(text|image|video|voice|music)$")
+    kind: str = Field(pattern="^(text|production|image|video|voice|music)$")
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
 
@@ -116,8 +116,8 @@ def update_job(job_id, **values):
 def run_job(job_id, kind, inp):
     try:
         update_job(job_id, status="processing", progress=5, message="Preparing generation…")
-        if kind != "text":
-            raise RuntimeError(f"The {kind} adapter is not installed in this build.")
+        if kind not in ("text", "production"):
+            raise RuntimeError(f"The {kind} adapter is not installed or configured. Check /health for engine status.")
         prompt = str(inp.get("prompt") or inp.get("idea") or "").strip()
         if not prompt:
             raise RuntimeError("Add a prompt or story idea before generating.")
@@ -140,9 +140,18 @@ def run_job(job_id, kind, inp):
                 last_progress["time"] = now_mono
         result = ollama_generate(prompt, system, on_piece)
         # Persist final progress and output together only after Ollama completes.
+        if kind == "production":
+            try:
+                structured = json.loads(result)
+            except Exception:
+                structured = {"production_notes": result, "format_warning": "Model did not return strict JSON."}
+            output = {"production": structured, "text": result}
+            message = "Production pack generated. Review before production."
+        else:
+            output = {"text": result}
+            message = "Script generation completed."
         update_job(job_id, status="completed", progress=100,
-                   message="Script generation completed.",
-                   output_json=json.dumps({"text": result}, ensure_ascii=False), error=None)
+                   message=message, output_json=json.dumps(output, ensure_ascii=False), error=None)
     except Exception as e:
         update_job(job_id, status="failed", progress=0,
                    message="Generation failed.", error=str(e))
@@ -161,15 +170,20 @@ def root():
 
 @app.get("/health")
 def health():
+    from backend.media_engines import comfyui_status, provider_status
     local=ollama_status()
     ffmpeg=shutil.which("ffmpeg")
-    return {"status":"ok","engine":"MyTube AI","version":"0.4.0",
+    image_status=comfyui_status()
+    video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
+    voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
+    music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
+    return {"status":"ok","engine":"MyTube AI","version":"1.0.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
-            "image":{"available":False,"configured":bool(os.getenv("COMFYUI_URL")),"provider":"comfyui" if os.getenv("COMFYUI_URL") else None},
-            "video":{"available":False,"configured":bool(os.getenv("MYTUBE_VIDEO_API_URL")),"provider":"configured-http" if os.getenv("MYTUBE_VIDEO_API_URL") else None},
-            "voice":{"available":False,"configured":bool(os.getenv("MYTUBE_TTS_API_URL")),"provider":"configured-http" if os.getenv("MYTUBE_TTS_API_URL") else None},
-            "music":{"available":False,"configured":bool(os.getenv("MYTUBE_MUSIC_API_URL")),"provider":"configured-http" if os.getenv("MYTUBE_MUSIC_API_URL") else None},
+            "image":image_status,
+            "video":video_status,
+            "voice":voice_status,
+            "music":music_status,
             "render":{"available":bool(ffmpeg),"provider":"ffmpeg" if ffmpeg else None}
         },"storage":{"assets":ASSET_DIR,"exports":EXPORT_DIR,"maxUploadMB":MAX_UPLOAD_MB}}
 
@@ -318,6 +332,44 @@ def render_download(render_id: str, authorization: str | None = Header(default=N
     path=os.path.join(EXPORT_DIR,render_id+".mp4")
     if not os.path.isfile(path): raise HTTPException(status_code=404,detail="Render is not ready")
     return FileResponse(path,media_type="video/mp4",filename="mytube-export.mp4")
+
+
+class ImageIn(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+    workflow: dict[str, Any] = Field(default_factory=dict)
+
+class ProviderIn(BaseModel):
+    prompt: str = Field(min_length=1, max_length=8000)
+    projectId: str = Field(min_length=1, max_length=120)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+@app.post("/api/engines/image")
+def generate_image(body: ImageIn, authorization: str | None = Header(default=None)):
+    check_auth(authorization)
+    from backend.media_engines import comfyui_submit
+    try: return comfyui_submit(body.prompt, body.workflow)
+    except Exception as e: raise HTTPException(status_code=503, detail=str(e))
+
+@app.post("/api/engines/video")
+def generate_video(body: ProviderIn, authorization: str | None = Header(default=None)):
+    check_auth(authorization)
+    from backend.media_engines import configured_provider_submit
+    try: return configured_provider_submit("MYTUBE_VIDEO_API_URL","Video",body.model_dump())
+    except Exception as e: raise HTTPException(status_code=503, detail=str(e))
+
+@app.post("/api/engines/voice")
+def generate_voice(body: ProviderIn, authorization: str | None = Header(default=None)):
+    check_auth(authorization)
+    from backend.media_engines import configured_provider_submit
+    try: return configured_provider_submit("MYTUBE_TTS_API_URL","Speech",body.model_dump())
+    except Exception as e: raise HTTPException(status_code=503, detail=str(e))
+
+@app.post("/api/engines/music")
+def generate_music(body: ProviderIn, authorization: str | None = Header(default=None)):
+    check_auth(authorization)
+    from backend.media_engines import configured_provider_submit
+    try: return configured_provider_submit("MYTUBE_MUSIC_API_URL","Music",body.model_dump())
+    except Exception as e: raise HTTPException(status_code=503, detail=str(e))
 
 # Serve CSS, JS, icons and manifest after explicit API routes.
 app.mount("/", StaticFiles(directory=STUDIO_DIR, html=True), name="studio")
