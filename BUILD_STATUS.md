@@ -1,7 +1,24 @@
-# Build status — Release 1.8
+# Build status — Release 2.1
 
-Implemented: local Ollama text/script generation, production-pack generation, scene-level media job queue, generic provider submission/status polling, automatic completed media import for providers implementing the documented output endpoint, asset upload/download, subtitle formatting endpoint, FFmpeg 16:9/9:16 MP4 rendering, multiple audio mixing, watermark placement, and browser-local project backup/restore.
+Implemented and verified:
+- Local text/production jobs.
+- Scene-level video/voice/music provider submission, polling and output-import contract.
+- ComfyUI image submission/status/output routes.
+- Subtitle generation endpoint and production-pack subtitle drafts.
+- FFmpeg 16:9/9:16 full-video rendering, configurable watermark and multiple audio-track mixing.
+- Project-local media-job tracking, saved status refresh and failed-job retry.
+- Individual Shorts trim/render: upload a source clip, select start/end seconds, render a 9:16 H.264/AAC MP4, apply project watermark, check render status and open the output.
 
-Verified in this build environment: Python compilation, JavaScript syntax, FastAPI route registration, provider output content-type/extension tests, job import route smoke tests, and ZIP integrity.
+Verification performed in build environment:
+- Python syntax compilation passed.
+- JavaScript syntax check passed.
+- FastAPI app imported and routes registered.
+- Actual FFmpeg short render tested using a generated sample clip; output verified at 720x1280 with audio and watermark.
 
-Not included: bundled or hosted image/video/TTS/music models, provider accounts/credentials, default ComfyUI model workflow, persistent always-on compute, or deployment to the user's Codespace. External engines and compatible provider implementations are required for generated media.
+External dependencies remain:
+- ComfyUI + model + workflow for image generation.
+- Compatible configured video/TTS/music providers for those generation types.
+- FFmpeg on the backend for rendering.
+- No model weights or provider credentials are bundled.
+
+Deployment has not been performed from this build environment.

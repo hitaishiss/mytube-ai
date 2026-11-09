@@ -43,3 +43,5 @@ button:active{transform:translateY(0)}
   .tabs{scrollbar-width:thin}
   .tabs button{font-size:13px;padding:9px 11px}
 }
+
+.scene-preview{display:block;width:100%;max-width:720px;max-height:520px;object-fit:contain;border-radius:12px;margin-top:10px;background:#111}

@@ -26,7 +26,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="1.8.0")
+app = FastAPI(title="MyTube AI private backend", version="2.0.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -201,7 +201,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"1.8.0",
+    return {"status":"ok","engine":"MyTube AI","version":"2.0.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,
@@ -263,6 +263,29 @@ def get_job(job_id: str, authorization: str | None = Header(default=None)):
     with connect() as c:
         row=c.execute("SELECT * FROM jobs WHERE job_id=?",(job_id,)).fetchone()
     if not row: raise HTTPException(status_code=404,detail="Job not found")
+    return job_dict(row)
+
+
+@app.post("/api/jobs/{job_id}/retry", status_code=202)
+def retry_job(job_id: str, authorization: str | None = Header(default=None)):
+    """Create a fresh attempt from a failed job's original input."""
+    check_auth(authorization)
+    with connect() as c:
+        old = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    if not old:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if old["status"] != "failed":
+        raise HTTPException(status_code=409, detail="Only failed jobs can be retried")
+    new_id = str(uuid.uuid4())
+    stamp = now()
+    with connect() as c:
+        c.execute("""INSERT INTO jobs(job_id,project_id,kind,status,progress,message,input_json,
+            output_json,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (new_id, old["project_id"], old["kind"], "queued", 0,
+             "Retry queued from failed job.", old["input_json"], None, None, stamp, stamp))
+        row = c.execute("SELECT * FROM jobs WHERE job_id=?", (new_id,)).fetchone()
+    inp = json.loads(old["input_json"] or "{}")
+    threading.Thread(target=run_job, args=(new_id, old["kind"], inp), daemon=True).start()
     return job_dict(row)
 
 
@@ -497,6 +520,48 @@ def render_download(render_id: str, authorization: str | None = Header(default=N
     path=os.path.join(EXPORT_DIR,render_id+".mp4")
     if not os.path.isfile(path): raise HTTPException(status_code=404,detail="Render is not ready")
     return FileResponse(path,media_type="video/mp4",filename="mytube-export.mp4")
+
+
+class ShortRenderIn(BaseModel):
+    projectId: str = Field(min_length=1, max_length=120)
+    assetId: str = Field(min_length=1, max_length=180)
+    startSeconds: float = Field(default=0, ge=0)
+    endSeconds: float = Field(gt=0)
+    resolution: str = Field(default="1080p", pattern="^(720p|1080p)$")
+    watermark: str = Field(default="", max_length=100)
+
+
+@app.post("/api/shorts/render", status_code=202)
+def render_short(body: ShortRenderIn, authorization: str | None = Header(default=None)):
+    check_auth(authorization)
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(status_code=503, detail="FFmpeg is not installed on this host")
+    if body.endSeconds <= body.startSeconds:
+        raise HTTPException(status_code=422, detail="End time must be greater than start time")
+    source = safe_asset(body.assetId)
+    render_id = uuid.uuid4().hex
+    output = os.path.join(EXPORT_DIR, render_id + ".mp4")
+    threading.Thread(target=_short_render_worker, args=(source, body, output), daemon=True).start()
+    return {"renderId": render_id, "status": "processing", "format": "9:16"}
+
+
+def _short_render_worker(source, body, output):
+    try:
+        w, h = (720, 1280) if body.resolution == "720p" else (1080, 1920)
+        duration = body.endSeconds - body.startSeconds
+        vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1"
+        cmd = ["ffmpeg", "-y", "-ss", str(body.startSeconds), "-i", source,
+               "-t", str(duration), "-vf", vf, "-c:v", "libx264", "-preset", "veryfast",
+               "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+               "-movflags", "+faststart"]
+        if body.watermark:
+            txt = body.watermark.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+            cmd += ["-vf", vf + f",drawtext=text='{txt}':x=w-tw-24:y=h-th-24:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.45"]
+        cmd.append(output)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=7200)
+    except Exception as exc:
+        with open(output + ".error", "w", encoding="utf-8") as f:
+            f.write(str(exc)[:1000])
 
 
 class ImageIn(BaseModel):
