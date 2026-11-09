@@ -18,3 +18,5 @@ RELEASE 1.9: To generate scene stills, start ComfyUI on a reachable host, export
 Release 2.0 adds media queue status persistence and failed-job retry. See RELEASE_NOTES_2.0.md and BUILD_STATUS.md.
 
 Release 2.1 adds per-Short 9:16 MP4 trimming/rendering from uploaded video clips. See RELEASE_NOTES_2.1.md and BUILD_STATUS.md.
+
+Release 2.4: security hardening for ComfyUI output retrieval and bounded render error reporting. See RELEASE_NOTES_2.4.md.

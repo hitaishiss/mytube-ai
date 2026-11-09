@@ -75,17 +75,26 @@ def comfyui_fetch_image(filename, subfolder="", image_type="output"):
     from urllib.request import Request, urlopen
     url = os.getenv("COMFYUI_URL","").rstrip("/")
     if not url: raise RuntimeError("Set COMFYUI_URL to enable ComfyUI.")
-    if not filename or "/" in filename or "\\\\" in filename or filename in (".",".."):
+    if (not isinstance(filename, str) or not filename or filename in (".", "..")
+            or "/" in filename or "\\" in filename or "\x00" in filename):
         raise ValueError("Invalid image filename.")
-    if subfolder and (subfolder.startswith("/") or ".." in subfolder.split("/") or "\\\\" in subfolder):
+    if (not isinstance(subfolder, str) or "\x00" in subfolder or "\\" in subfolder
+            or subfolder.startswith("/") or any(part in (".", "..") for part in subfolder.split("/"))):
         raise ValueError("Invalid image subfolder.")
+    if image_type not in ("output", "temp", "input"):
+        raise ValueError("Invalid ComfyUI image type.")
     query = urlencode({"filename":filename,"subfolder":subfolder,"type":image_type})
     req = Request(url + "/view?" + query, headers={"Accept":"image/*"})
     with urlopen(req, timeout=60) as response:
         content_type = response.headers.get("Content-Type","application/octet-stream")
         if not content_type.startswith("image/"):
             raise RuntimeError("ComfyUI returned a non-image output.")
-        return response.read(), content_type
+        data = response.read(100 * 1024 * 1024 + 1)
+        if len(data) > 100 * 1024 * 1024:
+            raise RuntimeError("ComfyUI image exceeds the 100 MB retrieval limit.")
+        if not data:
+            raise RuntimeError("ComfyUI returned an empty image.")
+        return data, content_type
 
 
 def configured_provider_poll(env_name, label, provider_job_id):

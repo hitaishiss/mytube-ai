@@ -22,3 +22,10 @@ Not verified / requires external setup:
 - Full production run with real project media.
 
 Important: adapters are integration points, not bundled generation models. A configured endpoint is not represented as a functioning generator until it passes its own health and job tests.
+
+
+Release 2.4 hardening:
+- ComfyUI output metadata now rejects POSIX/Windows traversal, null bytes, and unsupported image types.
+- Generated image downloads are capped at 100 MB and empty responses are rejected.
+- Render failure status reads are bounded and explicitly decoded.
+- Backend version is 2.4.0.
