@@ -26,7 +26,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="2.4.0")
+app = FastAPI(title="MyTube AI private backend", version="2.5.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -201,7 +201,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"2.4.0",
+    return {"status":"ok","engine":"MyTube AI","version":"2.5.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,
@@ -301,6 +301,37 @@ def refresh_job(job_id: str, authorization: str | None = Header(default=None)):
     if current["status"] not in ("submitted", "processing", "queued"):
         return current
     kind = current["kind"]
+    if kind == "image":
+        output = current.get("output") or {}
+        prompt_id = output.get("promptId") or output.get("prompt_id")
+        if not prompt_id:
+            return current
+        try:
+            from backend.media_engines import comfyui_history
+            history = comfyui_history(prompt_id)
+            item = history.get(prompt_id) or {}
+            outputs = []
+            for node_id, node in (item.get("outputs") or {}).items():
+                for image_item in node.get("images", []):
+                    outputs.append({"nodeId": node_id, "filename": image_item.get("filename"),
+                                    "subfolder": image_item.get("subfolder", ""),
+                                    "type": image_item.get("type", "output")})
+            provider_state = (item.get("status") or {})
+            failed = bool(provider_state.get("status_str") == "error")
+            completed = bool(provider_state.get("completed")) or bool(outputs)
+            state = "failed" if failed else ("completed" if completed else "processing")
+            refreshed = {**output, "providerStatus": state, "outputs": outputs}
+            message = ("Image generation failed in ComfyUI." if failed else
+                       ("Image generated. Import it into project assets." if completed else
+                        "Image generation is running in ComfyUI."))
+            with connect() as c:
+                c.execute("UPDATE jobs SET status=?,progress=?,message=?,output_json=?,error=?,updated_at=? WHERE job_id=?",
+                          (state, 100 if completed else (0 if failed else 60), message,
+                           json.dumps(refreshed, ensure_ascii=False), message if failed else None, now(), job_id))
+                fresh = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            return job_dict(fresh)
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"ComfyUI status check failed: {str(e)[:240]}")
     env_name = {"video":"MYTUBE_VIDEO_API_URL", "voice":"MYTUBE_TTS_API_URL",
                 "music":"MYTUBE_MUSIC_API_URL"}.get(kind)
     if not env_name:
@@ -342,6 +373,27 @@ def import_provider_output(job_id: str, authorization: str | None = Header(defau
     if (current.get("output") or {}).get("assetId"):
         return {"assetId": current["output"]["assetId"], "status": "imported"}
     kind = current["kind"]
+    if kind == "image":
+        output = current.get("output") or {}
+        outputs = output.get("outputs") or []
+        if not outputs:
+            raise HTTPException(status_code=409, detail="ComfyUI image output is not available yet; refresh the job first")
+        image_item = outputs[0]
+        try:
+            from backend.media_engines import comfyui_fetch_image
+            data, content_type = comfyui_fetch_image(image_item.get("filename", ""),
+                image_item.get("subfolder", ""), image_item.get("type", "output"))
+            ext = {"image/png":".png", "image/jpeg":".jpg", "image/webp":".webp"}.get(content_type)
+            if not ext:
+                raise RuntimeError("Unsupported generated image format")
+            name = uuid.uuid4().hex + ext
+            with open(os.path.join(ASSET_DIR, name), "wb") as out:
+                out.write(data)
+            saved = {**output, "assetId": name, "assetContentType": content_type, "assetSize": len(data)}
+            update_job(job_id, output_json=json.dumps(saved, ensure_ascii=False), message="Generated image imported into project assets.")
+            return {"assetId": name, "contentType": content_type, "size": len(data), "status": "imported"}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Could not import generated image: {str(e)[:240]}")
     env_name = {"video":"MYTUBE_VIDEO_API_URL", "voice":"MYTUBE_TTS_API_URL", "music":"MYTUBE_MUSIC_API_URL"}.get(kind)
     if not env_name:
         raise HTTPException(status_code=400, detail="This job kind does not use a downloadable media provider")
