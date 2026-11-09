@@ -9,3 +9,5 @@ FFmpeg can assemble uploaded/authorized clips and audio into MP4, including 9:16
 Do not put API keys in app.js or commit them. Configure secrets only in the private backend environment. No paid provider is enabled by default.
 
 See BUILD_STATUS.md and ENGINE_INTEGRATION.md for exact capabilities and dependencies.
+
+Release 1.8 adds automatic polling and import of completed media from configured providers. Providers must implement GET /jobs/{id}/output returning raw supported media. See RELEASE_NOTES_1.8.md.

@@ -26,7 +26,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="1.6.0")
+app = FastAPI(title="MyTube AI private backend", version="1.8.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -201,7 +201,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"1.6.0",
+    return {"status":"ok","engine":"MyTube AI","version":"1.8.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,
@@ -264,6 +264,80 @@ def get_job(job_id: str, authorization: str | None = Header(default=None)):
         row=c.execute("SELECT * FROM jobs WHERE job_id=?",(job_id,)).fetchone()
     if not row: raise HTTPException(status_code=404,detail="Job not found")
     return job_dict(row)
+
+
+@app.post("/api/jobs/{job_id}/refresh")
+def refresh_job(job_id: str, authorization: str | None = Header(default=None)):
+    """Refresh submitted video, speech or music jobs using GET /jobs/{id}."""
+    check_auth(authorization)
+    with connect() as c:
+        row = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    current = job_dict(row)
+    if current["status"] not in ("submitted", "processing", "queued"):
+        return current
+    kind = current["kind"]
+    env_name = {"video":"MYTUBE_VIDEO_API_URL", "voice":"MYTUBE_TTS_API_URL",
+                "music":"MYTUBE_MUSIC_API_URL"}.get(kind)
+    if not env_name:
+        return current
+    provider_result = (current.get("output") or {}).get("result") or {}
+    provider_id = provider_result.get("jobId") or provider_result.get("job_id") or provider_result.get("id")
+    if not provider_id:
+        return current
+    try:
+        from backend.media_engines import configured_provider_poll
+        polled = configured_provider_poll(env_name, kind.title(), provider_id)
+        state = polled["status"]
+        progress = 100 if state == "completed" else (0 if state == "queued" else 75)
+        message = {"queued":"Provider job is queued.", "processing":"Provider job is running.",
+                   "completed":"Provider job completed.", "failed":"Provider job failed."}[state]
+        refreshed_output = {**(current.get("output") or {}),
+                            "providerStatus": state, "providerResult": polled.get("result", {})}
+        with connect() as c:
+            c.execute("UPDATE jobs SET status=?,progress=?,message=?,output_json=?,error=?,updated_at=? WHERE job_id=?",
+                      (state, progress, message, json.dumps(refreshed_output, ensure_ascii=False),
+                       str(polled["result"].get("error", "")) if state == "failed" else None, now(), job_id))
+            fresh = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        return job_dict(fresh)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Provider status check failed: {str(e)[:240]}")
+
+
+@app.post("/api/jobs/{job_id}/import-output")
+def import_provider_output(job_id: str, authorization: str | None = Header(default=None)):
+    """Import a completed provider media file into MyTube's managed asset store."""
+    check_auth(authorization)
+    with connect() as c:
+        row = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    current = job_dict(row)
+    if current["status"] != "completed":
+        raise HTTPException(status_code=409, detail="Provider job is not completed")
+    if (current.get("output") or {}).get("assetId"):
+        return {"assetId": current["output"]["assetId"], "status": "imported"}
+    kind = current["kind"]
+    env_name = {"video":"MYTUBE_VIDEO_API_URL", "voice":"MYTUBE_TTS_API_URL", "music":"MYTUBE_MUSIC_API_URL"}.get(kind)
+    if not env_name:
+        raise HTTPException(status_code=400, detail="This job kind does not use a downloadable media provider")
+    result = (current.get("output") or {}).get("result") or {}
+    provider_id = result.get("jobId") or result.get("job_id") or result.get("id")
+    if not provider_id:
+        raise HTTPException(status_code=502, detail="Provider job ID is missing; cannot retrieve its output")
+    try:
+        from backend.media_engines import configured_provider_fetch_output
+        data, content_type, ext = configured_provider_fetch_output(env_name, kind.title(), provider_id)
+        name = uuid.uuid4().hex + ext
+        with open(os.path.join(ASSET_DIR, name), "wb") as out:
+            out.write(data)
+        output = {**(current.get("output") or {}), "assetId": name, "assetContentType": content_type, "assetSize": len(data)}
+        update_job(job_id, output_json=json.dumps(output, ensure_ascii=False), message="Provider media imported into project assets.")
+        return {"assetId": name, "contentType": content_type, "size": len(data), "status": "imported"}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not import provider output: {str(e)[:240]}")
+
 
 @app.get("/api/jobs")
 def list_jobs(projectId: str | None = None, authorization: str | None = Header(default=None)):

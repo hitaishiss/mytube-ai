@@ -86,3 +86,59 @@ def comfyui_fetch_image(filename, subfolder="", image_type="output"):
         if not content_type.startswith("image/"):
             raise RuntimeError("ComfyUI returned a non-image output.")
         return response.read(), content_type
+
+
+def configured_provider_poll(env_name, label, provider_job_id):
+    """Poll the provider's GET /jobs/{id} endpoint."""
+    from urllib.parse import quote
+    url = os.getenv(env_name, "").rstrip("/")
+    if not url:
+        raise RuntimeError(f"{label} engine is not configured.")
+    token = os.getenv(env_name.replace("_URL", "_TOKEN"), "")
+    headers = {"Authorization": "Bearer " + token} if token else {}
+    result = _json_request(url + "/jobs/" + quote(str(provider_job_id), safe=""), timeout=12, headers=headers)
+    status = str(result.get("status", "processing")).lower()
+    if status in ("succeeded", "success", "done"):
+        status = "completed"
+    elif status in ("error", "cancelled", "canceled"):
+        status = "failed"
+    if status not in ("queued", "processing", "completed", "failed"):
+        status = "processing"
+    return {"provider": label, "status": status, "result": result}
+
+
+def configured_provider_fetch_output(env_name, label, provider_job_id, max_bytes=1024*1024*1024):
+    """Fetch completed media from the provider's documented GET /jobs/{id}/output endpoint.
+
+    The URL is built from the private configured base URL; provider-supplied arbitrary
+    URLs are deliberately not followed (avoids SSRF).
+    """
+    from urllib.parse import quote
+    from urllib.request import Request, urlopen
+    url = os.getenv(env_name, "").rstrip("/")
+    if not url:
+        raise RuntimeError(f"{label} engine is not configured.")
+    token = os.getenv(env_name.replace("_URL", "_TOKEN"), "")
+    headers = {"Accept": "video/*, audio/*, application/octet-stream"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = Request(url + "/jobs/" + quote(str(provider_job_id), safe="") + "/output", headers=headers)
+    with urlopen(req, timeout=180) as response:
+        content_type = response.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0].lower()
+        allowed = {
+            "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov",
+            "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
+            "audio/x-wav": ".wav", "audio/ogg": ".ogg", "audio/mp4": ".m4a",
+            "application/octet-stream": {"video": ".mp4", "voice": ".mp3", "music": ".mp3"}.get(label.lower(), ".bin"),
+        }
+        if content_type not in allowed:
+            raise RuntimeError(f"Provider output has unsupported Content-Type: {content_type}")
+        length = int(response.headers.get("Content-Length", "0") or 0)
+        if length > max_bytes:
+            raise RuntimeError("Provider output exceeds the 1 GB import limit.")
+        data = response.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise RuntimeError("Provider output exceeds the 1 GB import limit.")
+        if not data:
+            raise RuntimeError("Provider returned an empty media file.")
+    return data, content_type, allowed[content_type]

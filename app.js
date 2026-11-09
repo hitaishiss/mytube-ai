@@ -60,14 +60,25 @@ if(queueMedia)queueMedia.onclick=async()=>{
   if(!response.ok)throw Error("Queue request failed: "+(await response.text()).slice(0,300));
   const data=await response.json();let states={};
   for(let cycle=0;cycle<90;cycle++){
-   const rows=await Promise.all(data.jobs.map(async job=>{const r=await fetch(base+"/api/jobs/"+encodeURIComponent(job.jobId));if(!r.ok)throw Error("Could not read job status");return await r.json()}));
+   const rows=await Promise.all(data.jobs.map(async job=>{
+    let r=await fetch(base+"/api/jobs/"+encodeURIComponent(job.jobId));if(!r.ok)throw Error("Could not read job status");let current=await r.json();
+    if(["submitted","processing","queued"].includes(current.status)){const refreshed=await fetch(base+"/api/jobs/"+encodeURIComponent(job.jobId)+"/refresh",{method:"POST"});if(refreshed.ok)current=await refreshed.json()}
+    if(current.status==="completed" && ["video","voice","music"].includes(current.kind) && !current.output?.assetId){
+     const imported=await fetch(base+"/api/jobs/"+encodeURIComponent(job.jobId)+"/import-output",{method:"POST"});
+     if(imported.ok){const result=await imported.json();current.output={...(current.output||{}),assetId:result.assetId};current.message="Completed media imported: "+result.assetId}
+     else if(imported.status!==409){const detail=await imported.text();current.message="Provider completed; media import pending: "+detail.slice(0,160)}
+    }
+    return current;
+   }));
    states=rows.reduce((a,j)=>(a[j.status]=(a[j.status]||0)+1,a),{});
    status.textContent=rows.map(j=>`${j.kind}${j.sceneNumber?" scene "+j.sceneNumber:""}: ${j.status} — ${j.message||j.error||""}`).join(" | ");
-   if(rows.every(j=>["failed","submitted","completed"].includes(j.status)))break;
+   if(rows.every(j=>["failed","completed"].includes(j.status)))break;
    await new Promise(r=>setTimeout(r,2000));
   }
-  const failed=states.failed||0,submitted=states.submitted||0;
-  status.textContent+=` · ${submitted} accepted by providers, ${failed} failed. Accepted does not mean a finished media file; provider-specific result retrieval is still required.`;
+  const failed=states.failed||0,completed=states.completed||0,submitted=states.submitted||0;
+  status.textContent+=` · ${completed} completed, ${submitted} still submitted, ${failed} failed. Completed provider files are imported when the provider supports the output endpoint.`;
+  const imported=rows.filter(j=>j.output?.assetId);
+  if(imported.length){status.appendChild(document.createTextNode(" Files: "));imported.forEach((job,index)=>{if(index)status.appendChild(document.createTextNode(" · "));const a=document.createElement("a");a.href=base+"/api/assets/"+encodeURIComponent(job.output.assetId);a.target="_blank";a.rel="noopener";a.textContent=(job.kind+ (job.input?.sceneNumber?" scene "+job.input.sceneNumber:""));status.appendChild(a)})}
  }catch(e){status.textContent="Media queue: "+e.message}
  finally{queueMedia.disabled=false}
 };

@@ -37,3 +37,18 @@ nodes installed on that ComfyUI server. This package does not bundle image model
 - FFmpeg rendering is editing/encoding, not AI video generation.
 - Do not put provider secrets in the GitHub Pages frontend or commit them to Git.
 - No paid provider is enabled by default. No billing is initiated by this package.
+
+
+## Async provider polling contract (Release 1.7)
+
+For video, speech and music, the configured endpoint receives `POST /generate`.
+The JSON response must include a provider job identifier as `jobId`, `job_id`,
+or `id` for asynchronous work. MyTube AI can then call `GET /jobs/{id}` using
+the same base URL and bearer token. That response should contain a `status`
+of `queued`, `processing`, `completed`, or `failed` (common aliases are
+normalized). A completed response should include provider output metadata.
+
+The MyTube endpoint `POST /api/jobs/{mytube_job_id}/refresh` refreshes a
+submitted job's provider status. The provider must implement the contract;
+this release does not invent provider-specific APIs or download arbitrary
+URLs returned by a provider.

@@ -1,25 +1,7 @@
-# Build status — Release 1.6
+# Build status — Release 1.8
 
-## Implemented
-- Local Ollama script and production-pack generation.
-- Production-pack Shorts are imported into the Shorts planner.
-- One-call production queue creates scene-level video and voice jobs plus an optional music job.
-- Backend job status is polled and shown in the Production Workflow screen.
-- Provider acceptance is distinguished from completed output (`submitted` != `completed`).
-- Generic ComfyUI image submission and generic video/TTS/music HTTP adapters.
-- Asset upload, SRT/VTT formatting, FFmpeg MP4 rendering, 16:9 and 9:16 outputs, configurable watermark, and multiple audio-track mixing.
-- Browser-local project persistence and backup/restore.
+Implemented: local Ollama text/script generation, production-pack generation, scene-level media job queue, generic provider submission/status polling, automatic completed media import for providers implementing the documented output endpoint, asset upload/download, subtitle formatting endpoint, FFmpeg 16:9/9:16 MP4 rendering, multiple audio mixing, watermark placement, and browser-local project backup/restore.
 
-## Checks performed
-- Python syntax compilation.
-- JavaScript syntax check.
-- FastAPI route registration and queue schema smoke test.
-- ZIP integrity check.
+Verified in this build environment: Python compilation, JavaScript syntax, FastAPI route registration, provider output content-type/extension tests, job import route smoke tests, and ZIP integrity.
 
-## Still external / incomplete
-- No image/video/TTS/music model weights are bundled.
-- ComfyUI requires a configured server and valid installed workflow/model.
-- Video/TTS/music require compatible services implementing the documented HTTP contract.
-- Provider-specific completion polling and automatic media-file retrieval are not standardized or complete.
-- The frontend project data remains browser-local; backend jobs/assets are server-side.
-- Deployment and end-to-end testing on the user's Codespace have not been performed.
+Not included: bundled or hosted image/video/TTS/music models, provider accounts/credentials, default ComfyUI model workflow, persistent always-on compute, or deployment to the user's Codespace. External engines and compatible provider implementations are required for generated media.
