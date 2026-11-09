@@ -1,4 +1,4 @@
-# Build status — Release 2.1
+# Build status — Release 2.2
 
 Implemented and verified:
 - Local text/production jobs.
@@ -8,6 +8,7 @@ Implemented and verified:
 - FFmpeg 16:9/9:16 full-video rendering, configurable watermark and multiple audio-track mixing.
 - Project-local media-job tracking, saved status refresh and failed-job retry.
 - Individual Shorts trim/render: upload a source clip, select start/end seconds, render a 9:16 H.264/AAC MP4, apply project watermark, check render status and open the output.
+- Release 2.2: per-Short status refresh restores saved render state and download links after leaving/reopening the planner.
 
 Verification performed in build environment:
 - Python syntax compilation passed.
