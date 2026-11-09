@@ -1,17 +1,11 @@
-MYTUBE AI — CONSOLIDATED RELEASE 1.2
+MYTUBE AI — RELEASE 1.6
 
-This is a complete replacement package for the previous MyTube AI release files.
-It retains the studio, local Ollama text jobs, project/production-pack features,
-media storage and FFmpeg backend, and now wires Smart Export to media upload,
-render submission, status polling and MP4 download. English/Chinese subtitle drafts
-can be downloaded as text files from the production pack.
+This is a private, self-hosted studio. Extract this package into your existing Codespace repository, replacing the matching app files, then run your existing start.sh.
 
-Deployment: extract the ZIP into the existing repository root, replacing matching
-application files. Preserve your existing mytube_data directory, SQLite database,
-.env/secrets, and any user project backups. Do not commit API tokens.
+The local Ollama text model powers script and production-pack drafts. The Production Workflow can queue scene video, dialogue voice and soundtrack jobs when compatible providers are configured in the backend environment. Provider acceptance is not the same as a finished media asset.
 
-Start from the extracted repository root with: bash start.sh
+FFmpeg can assemble uploaded/authorized clips and audio into MP4, including 9:16 vertical output. This renderer does not generate video from text.
 
-AI image/video/voice/music engines still require separate compatible models or
-services. See ENGINE_INTEGRATION.md and RELEASE_NOTES_1.2.md. This package does not
-claim those engines are active unless the backend health check confirms them.
+Do not put API keys in app.js or commit them. Configure secrets only in the private backend environment. No paid provider is enabled by default.
+
+See BUILD_STATUS.md and ENGINE_INTEGRATION.md for exact capabilities and dependencies.

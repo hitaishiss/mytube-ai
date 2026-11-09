@@ -26,7 +26,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="1.4.0")
+app = FastAPI(title="MyTube AI private backend", version="1.6.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -58,6 +58,16 @@ class JobIn(BaseModel):
     kind: str = Field(pattern="^(text|production|image|video|voice|music)$")
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
+
+class ProductionQueueIn(BaseModel):
+    projectId: str = Field(min_length=1, max_length=120)
+    scenes: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+    characters: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    musicPrompt: str = Field(default="", max_length=8000)
+    includeVoice: bool = True
+    includeVideo: bool = True
+    includeMusic: bool = True
+
 
 def check_auth(authorization: str | None):
     if APP_TOKEN and authorization != f"Bearer {APP_TOKEN}":
@@ -129,8 +139,8 @@ def run_job(job_id, kind, inp):
                 env = {"video":"MYTUBE_VIDEO_API_URL", "voice":"MYTUBE_TTS_API_URL", "music":"MYTUBE_MUSIC_API_URL"}[kind]
                 label = {"video":"Video", "voice":"Speech", "music":"Music"}[kind]
                 result = configured_provider_submit(env, label, {"projectId": inp.get("projectId"), "prompt": prompt, "input": inp})
-            update_job(job_id, status="completed", progress=100,
-                       message=f"{kind.title()} request accepted by configured engine.",
+            update_job(job_id, status="submitted", progress=25,
+                       message=f"{kind.title()} request accepted. Provider-side completion and asset retrieval are not yet standardized.",
                        output_json=json.dumps(result, ensure_ascii=False), error=None)
             return
         if kind not in ("text", "production"):
@@ -191,7 +201,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"1.4.0",
+    return {"status":"ok","engine":"MyTube AI","version":"1.6.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,
@@ -215,6 +225,37 @@ def create_job(body: JobIn, authorization: str | None = Header(default=None)):
     with connect() as c:
         row=c.execute("SELECT * FROM jobs WHERE job_id=?",(job_id,)).fetchone()
     return job_dict(row)
+
+@app.post("/api/production/queue", status_code=202)
+def queue_production(body: ProductionQueueIn, authorization: str | None = Header(default=None)):
+    """Queue scene-level media tasks; real generation requires configured providers."""
+    check_auth(authorization)
+    tasks=[]
+    cast=json.dumps(body.characters,ensure_ascii=False)
+    for index, scene in enumerate(body.scenes,1):
+        label=str(scene.get("slugline") or scene.get("title") or f"Scene {index}")[:180]
+        visual=str(scene.get("visual_prompt") or scene.get("action") or scene.get("description") or "").strip()
+        dialogue=str(scene.get("dialogue_summary") or scene.get("dialogue") or "").strip()
+        if body.includeVideo and visual:
+            tasks.append(("video",{"prompt":f"Cinematic scene: {label}. Visual direction: {visual}. Camera: {scene.get('camera','cinematic')}. Lighting: {scene.get('lighting','story-appropriate')}. Cast continuity: {cast}","sceneNumber":index}))
+        if body.includeVoice and dialogue:
+            tasks.append(("voice",{"prompt":f"Generate dialogue audio for {label}. Dialogue: {dialogue}. Voice directions: {cast}","sceneNumber":index}))
+    if body.includeMusic and body.musicPrompt.strip():
+        tasks.append(("music",{"prompt":body.musicPrompt.strip(),"scope":"project soundtrack"}))
+    if not tasks:
+        raise HTTPException(status_code=422,detail="No usable scene visual prompts, dialogue, or music brief were found.")
+    stamp=now(); jobs=[]
+    with connect() as c:
+        for kind,payload in tasks:
+            jid=str(uuid.uuid4()); inp={**payload,"projectId":body.projectId}
+            c.execute("INSERT INTO jobs(job_id,project_id,kind,status,progress,message,input_json,output_json,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (jid,body.projectId,kind,"queued",0,"Queued by production orchestrator.",json.dumps(inp,ensure_ascii=False),None,None,stamp,stamp))
+            jobs.append({"jobId":jid,"kind":kind,"sceneNumber":payload.get("sceneNumber")})
+    for job in jobs:
+        with connect() as c: row=c.execute("SELECT input_json FROM jobs WHERE job_id=?",(job["jobId"],)).fetchone()
+        threading.Thread(target=run_job,args=(job["jobId"],job["kind"],json.loads(row["input_json"])),daemon=True).start()
+    return {"projectId":body.projectId,"queued":len(jobs),"jobs":jobs,"message":"Queued jobs. Provider acceptance is not the same as completed media; inspect each job status."}
+
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str, authorization: str | None = Header(default=None)):
@@ -269,6 +310,8 @@ class RenderIn(BaseModel):
     fps: int = Field(default=30, ge=24, le=60)
     preset: str = Field(default="Balanced", pattern="^(High Quality|Balanced|Smaller File)$")
     watermark: str = Field(default="", max_length=100)
+    watermarkPosition: str = Field(default="Bottom right", pattern="^(Bottom right|Bottom left|Top right|Top left|Center)$")
+    aspectRatio: str = Field(default="16:9", pattern="^(16:9|9:16)$")
 
 
 def safe_asset(name: str) -> str:
@@ -324,11 +367,12 @@ def _render_worker(clips, audios, body, output):
     # Normalize and concatenate clips; mix all selected audio tracks.
     work=tempfile.mkdtemp(prefix="mytube-render-")
     try:
-        w,h={"720p":(1280,720),"1080p":(1920,1080),"4K":(3840,2160)}[body.resolution]
+        dimensions = {"720p":(1280,720),"1080p":(1920,1080),"4K":(3840,2160)} if body.aspectRatio == "16:9" else {"720p":(720,1280),"1080p":(1080,1920),"4K":(2160,3840)}
+        w,h=dimensions[body.resolution]
         normalized=[]
         for i,clip in enumerate(clips):
             target=os.path.join(work,f"clip-{i:04d}.mp4")
-            vf=f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={body.fps}"
+            vf = (f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2" if body.aspectRatio == "16:9" else f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}") + f",setsar=1,fps={body.fps}"
             cmd=["ffmpeg","-y","-i",clip,"-vf",vf,"-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p","-an",target]
             subprocess.run(cmd,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=7200)
             normalized.append(target)
@@ -343,7 +387,9 @@ def _render_worker(clips, audios, body, output):
         if body.watermark:
             # Escape drawtext metacharacters; never interpret user text as a filter expression.
             txt=body.watermark.replace("\\","\\\\").replace(":","\\:").replace("'","\\'").replace("%","\\%")
-            cmd += ["-vf",f"drawtext=text='{txt}':x=w-tw-24:y=h-th-24:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.45"]
+            positions = {"Bottom right": ("w-tw-24", "h-th-24"), "Bottom left": ("24", "h-th-24"), "Top right": ("w-tw-24", "24"), "Top left": ("24", "24"), "Center": ("(w-tw)/2", "(h-th)/2")}
+            wx, wy = positions[body.watermarkPosition]
+            cmd += ["-vf",f"drawtext=text='{txt}':x={wx}:y={wy}:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.45"]
         cmd += ["-c:v","libx264","-preset","medium" if body.preset=="High Quality" else "veryfast","-crf","18" if body.preset=="High Quality" else "23" if body.preset=="Balanced" else "28"]
         if audios:
             audio_inputs="".join(f"[{i+1}:a:0]" for i in range(len(audios)))
