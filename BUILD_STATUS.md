@@ -1,4 +1,4 @@
-# Build status — Release 2.5
+# Build status — Release 2.6
 
 ## Implemented in this codebase
 - Local Ollama text/production jobs and persisted job tracking.
@@ -29,3 +29,8 @@
 - Full production run with real project media.
 
 Important: adapters are integration points, not bundled generation models. A configured endpoint is not represented as a functioning generator until it passes its own health and job tests.
+
+## Release 2.6 changes
+- Backend startup now marks interrupted queued/processing local text and production jobs as failed with a retry instruction. This prevents jobs from appearing permanently active after Codespace/container restarts.
+- Remote provider jobs are left intact for status refresh; the backend does not falsely mark them failed merely because its own process restarted.
+- Backend version is 2.6.0.

@@ -26,7 +26,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="2.5.0")
+app = FastAPI(title="MyTube AI private backend", version="2.6.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -51,6 +51,15 @@ def init_db():
             input_json TEXT NOT NULL, output_json TEXT, error TEXT,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         )""")
+        # Background threads do not survive a Codespace/container restart.
+        # Mark interrupted local work explicitly instead of leaving it stuck forever.
+        stamp = now()
+        c.execute("""UPDATE jobs
+            SET status='failed', progress=0,
+                message='Backend restarted before this local job finished. Retry the job.',
+                error='Worker interrupted by backend restart.', updated_at=?
+            WHERE status IN ('queued','processing') AND kind IN ('text','production')""",
+            (stamp,))
 init_db()
 
 class JobIn(BaseModel):
@@ -201,7 +210,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"2.5.0",
+    return {"status":"ok","engine":"MyTube AI","version":"2.6.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,
