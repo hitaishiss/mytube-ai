@@ -26,7 +26,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="2.0.0")
+app = FastAPI(title="MyTube AI private backend", version="2.3.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -201,7 +201,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"2.0.0",
+    return {"status":"ok","engine":"MyTube AI","version":"2.3.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,
@@ -550,14 +550,13 @@ def _short_render_worker(source, body, output):
         w, h = (720, 1280) if body.resolution == "720p" else (1080, 1920)
         duration = body.endSeconds - body.startSeconds
         vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1"
+        if body.watermark:
+            txt = body.watermark.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+            vf += f",drawtext=text='{txt}':x=w-tw-24:y=h-th-24:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.45"
         cmd = ["ffmpeg", "-y", "-ss", str(body.startSeconds), "-i", source,
                "-t", str(duration), "-vf", vf, "-c:v", "libx264", "-preset", "veryfast",
                "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
-               "-movflags", "+faststart"]
-        if body.watermark:
-            txt = body.watermark.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
-            cmd += ["-vf", vf + f",drawtext=text='{txt}':x=w-tw-24:y=h-th-24:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.45"]
-        cmd.append(output)
+               "-movflags", "+faststart", output]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=7200)
     except Exception as exc:
         with open(output + ".error", "w", encoding="utf-8") as f:
