@@ -1,11 +1,11 @@
-import os, sqlite3, threading, uuid, json, time, shutil, subprocess, tempfile
+import os, sqlite3, threading, uuid, json, time, shutil, subprocess, tempfile, zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Body
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi import UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +27,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="2.10.0")
+app = FastAPI(title="MyTube AI private backend", version="2.12.0")
 # Bound background work to protect small Codespaces from large scene batches.
 try:
     MAX_WORKERS = max(1, min(8, int(os.getenv("MYTUBE_MAX_WORKERS", "3"))))
@@ -109,6 +109,62 @@ class ProductionQueueIn(BaseModel):
 def check_auth(authorization: str | None):
     if APP_TOKEN and authorization != f"Bearer {APP_TOKEN}":
         raise HTTPException(status_code=401, detail="Invalid backend token")
+
+
+@app.post("/api/backup")
+def create_full_backup(payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)):
+    """Create a portable archive of browser projects, backend jobs, assets and rendered exports."""
+    check_auth(authorization)
+    if payload.get("app") != "MyTube AI" or not isinstance(payload.get("projects"), list):
+        raise HTTPException(status_code=400, detail="Expected a MyTube AI project backup payload")
+    backup_id = uuid.uuid4().hex
+    archive_path = os.path.join(EXPORT_DIR, f"mytube-full-backup-{backup_id}.zip")
+    snapshot_path = os.path.join(EXPORT_DIR, f"jobs-{backup_id}.sqlite3")
+    try:
+        # SQLite's backup API gives a consistent snapshot while jobs may be updating.
+        with db_lock:
+            source = sqlite3.connect(DB_PATH, timeout=30)
+            target = sqlite3.connect(snapshot_path)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+                source.close()
+        manifest = {
+            "app": "MyTube AI",
+            "formatVersion": 1,
+            "createdAt": now(),
+            "contents": ["projects.json", "backend/jobs.sqlite3", "backend/assets/", "backend/exports/"]
+        }
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=3) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+            archive.writestr("projects.json", json.dumps(payload["projects"], ensure_ascii=False, indent=2))
+            archive.write(snapshot_path, "backend/jobs.sqlite3")
+            for folder, arc_prefix in ((ASSET_DIR, "backend/assets"), (EXPORT_DIR, "backend/exports")):
+                for current, _, files in os.walk(folder):
+                    for filename in files:
+                        full = os.path.join(current, filename)
+                        if (os.path.abspath(full) in (os.path.abspath(archive_path), os.path.abspath(snapshot_path))
+                                or filename.startswith(("mytube-full-backup-", "jobs-"))):
+                            continue
+                        rel = os.path.relpath(full, folder)
+                        archive.write(full, f"{arc_prefix}/{rel}")
+        return FileResponse(archive_path, media_type="application/zip",
+                            filename="mytube-ai-full-backup.zip",
+                            background=None)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        try:
+            if os.path.exists(archive_path): os.remove(archive_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=f"Backup could not be created: {exc}")
+    finally:
+        try:
+            if os.path.exists(snapshot_path): os.remove(snapshot_path)
+        except OSError:
+            pass
 
 def ollama_status():
     try:
@@ -238,7 +294,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"2.10.0",
+    return {"status":"ok","engine":"MyTube AI","version":"2.11.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,
@@ -637,6 +693,8 @@ def render_short(body: ShortRenderIn, authorization: str | None = Header(default
 
 
 def _short_render_worker(source, body, output):
+    # Publish only after FFmpeg has produced a complete file.
+    partial_output = output + ".partial.mp4"
     try:
         w, h = (720, 1280) if body.resolution == "720p" else (1080, 1920)
         duration = body.endSeconds - body.startSeconds
@@ -647,9 +705,16 @@ def _short_render_worker(source, body, output):
         cmd = ["ffmpeg", "-y", "-ss", str(body.startSeconds), "-i", source,
                "-t", str(duration), "-vf", vf, "-c:v", "libx264", "-preset", "veryfast",
                "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
-               "-movflags", "+faststart", output]
+               "-movflags", "+faststart", partial_output]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=7200)
+        if not os.path.isfile(partial_output) or os.path.getsize(partial_output) == 0:
+            raise RuntimeError("FFmpeg completed without producing a usable Short.")
+        os.replace(partial_output, output)
+        try: os.remove(output + ".error")
+        except FileNotFoundError: pass
     except Exception as exc:
+        try: os.remove(partial_output)
+        except FileNotFoundError: pass
         with open(output + ".error", "w", encoding="utf-8") as f:
             f.write(str(exc)[:1000])
 

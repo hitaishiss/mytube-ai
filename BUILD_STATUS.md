@@ -36,3 +36,19 @@ Adapters are integration points, not bundled generation models. A configured end
 - Bounded background worker pool (default 3, configurable 1–8).
 - Real media models/providers remain external configuration requirements.
 \n## Release 2.10\n- Queued media jobs recover as retryable failures after restart.\n- Processing media jobs without remote IDs recover as retryable failures.\n- Invalid worker-pool configuration safely falls back to three workers.\n\n## Release 2.11\n- Individual Shorts are atomically published only after a successful, non-empty FFmpeg output.\n- Actual sample Short render tested at 720x1280 with audio and watermark.\n
+## Release 2.12
+- Added completed provider-media import during saved-job refresh.
+- Imported media asset IDs are attached to matching production-pack scenes and persisted.
+- Validation: Python compile, JavaScript syntax, backend import/route count, ZIP integrity. Provider behavior remains dependent on an externally configured compatible service.
+
+
+## Release 2.13
+- Added full ZIP backup of browser project data, backend SQLite jobs, assets and rendered exports.
+- Added a phone-friendly Full backup + media control while preserving the existing JSON project backup.
+- Python/JavaScript syntax, backend import, endpoint smoke test and ZIP contents/integrity verified.
+
+
+## Release 2.14
+- Added validated full ZIP restore for projects plus missing media assets/exports.
+- Preserves existing files and active jobs database.
+- See RELEASE_NOTES_2.14.md.

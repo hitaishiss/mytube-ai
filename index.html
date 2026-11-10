@@ -17,7 +17,7 @@
 <div class="two"><label>Format<select id="newFormat"><option>Vertical (9:16)</option><option>Horizontal (16:9)</option></select></label><label>Story type<select id="newType"><option>Original drama</option><option>Inspired by a broad premise</option><option>Drama fusion (two sources I have rights to)</option></select></label></div>
 <button id="createBtn" class="primary">Create project</button>
 </section>
-<section class="panel"><div class="section-head"><h2>Your projects</h2><button id="backupBtn" class="secondary">Export backup</button></div><div id="projectList" class="project-list"></div><label class="restore">Restore backup<input type="file" id="restoreFile" accept="application/json"></label></section>
+<section class="panel"><div class="section-head"><h2>Your projects</h2><div class="backup-actions"><button id="backupBtn" class="secondary">Export projects</button><button id="fullBackupBtn" class="secondary">Full backup + media</button></div></div><div id="projectList" class="project-list"></div><label class="restore">Restore project JSON<input type="file" id="restoreFile" accept="application/json"></label><label class="restore">Restore full backup + media<input type="file" id="restoreFullFile" accept=".zip,application/zip"></label></section>
 <section class="panel notice"><h2>Studio status</h2><p>The studio includes local text-generation integration, production planning, optional media-engine adapters and FFmpeg rendering. Actual image, video, voice and music generation depends on the models and providers configured on your private backend.</p></section>
 </main>
 <dialog id="workspace">

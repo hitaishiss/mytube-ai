@@ -139,9 +139,23 @@ if(refreshMediaJobs)refreshMediaJobs.onclick=async()=>{
     const rr=await fetch(base+"/api/jobs/"+encodeURIComponent(job.jobId)+"/refresh",{method:"POST"});
     if(rr.ok)current=await rr.json();
    }
+   if(current.status==="completed" && ["video","voice","music"].includes(current.kind) && !current.output?.assetId){
+    const ir=await fetch(base+"/api/jobs/"+encodeURIComponent(job.jobId)+"/import-output",{method:"POST"});
+    if(ir.ok){const imported=await ir.json();current.output={...(current.output||{}),assetId:imported.assetId};current.message="Completed media imported into project assets"}
+   }
    return {...job,status:current.status,progress:current.progress,message:current.message,error:current.error,output:current.output};
   }));
-  p.mediaJobs=updated;persist();draw();
+  p.mediaJobs=updated;
+  // Keep imported provider assets attached to their matching production-pack scene.
+  if(p.productionPack && Array.isArray(p.productionPack.scenes)){
+   for(const job of updated){
+    const sceneNo=Number(job.sceneNumber||job.input?.sceneNumber||0),assetId=job.output?.assetId;
+    if(!sceneNo||!assetId)continue;
+    const scene=p.productionPack.scenes.find((item,index)=>Number(item.number||index+1)===sceneNo);
+    if(scene)scene[(job.kind||"media").toLowerCase()+"AssetId"]=assetId;
+   }
+  }
+  persist();draw();
  }catch(e){toast("Could not refresh jobs: "+e.message)}
  finally{refreshMediaJobs.disabled=false}
 };
@@ -298,7 +312,34 @@ document.querySelectorAll("[data-down]").forEach(b=>b.onclick=()=>{let i=+b.data
 }
 async function copy(s){try{await navigator.clipboard.writeText(s);toast("Copied.")}catch{toast("Clipboard unavailable in this browser.")}}
 $("backupBtn").onclick=()=>{const blob=new Blob([JSON.stringify({app:"MyTube AI",version:3,projects},null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="mytube-ai-backup.json";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+$("fullBackupBtn").onclick=async()=>{
+ const button=$("fullBackupBtn");button.disabled=true;button.textContent="Preparing backup…";
+ try{
+  const base=(window.MYTUBE_API_BASE||window.location.origin).trim().replace(/\/$/,"");
+  const response=await fetch(base+"/api/backup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({app:"MyTube AI",version:3,projects})});
+  if(!response.ok)throw Error((await response.text()).slice(0,240)||"Backend backup failed");
+  const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download="mytube-ai-full-backup.zip";a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);
+  toast("Full backup downloaded, including backend assets and rendered exports.");
+ }catch(e){toast("Full backup unavailable: "+e.message)}
+ finally{button.disabled=false;button.textContent="Full backup + media"}
+};
 $("restoreFile").onchange=async e=>{const f=e.target.files?.[0];if(!f)return;try{const d=JSON.parse(await f.text());if(d.app!=="MyTube AI"||!Array.isArray(d.projects))throw Error();if(!confirm("Restore backup? This replaces the projects currently stored in this browser."))return;projects=d.projects;persist();renderProjects();toast("Backup restored.");}catch{toast("Backup file could not be read.")}e.target.value=""};
+$("restoreFullFile").onchange=async e=>{
+ const f=e.target.files?.[0];if(!f)return;
+ if(!confirm("Restore projects and add missing media from this full backup? Existing media and backend jobs will be preserved.")){e.target.value="";return}
+ try{
+  const base=(window.MYTUBE_API_BASE||window.location.origin).trim().replace(/\/$/,"");
+  const body=new FormData();body.append("file",f,f.name);
+  const response=await fetch(base+"/api/backup/restore",{method:"POST",body});
+  if(!response.ok)throw Error((await response.text()).slice(0,300)||"Restore failed");
+  const result=await response.json();
+  if(!result.ok||!Array.isArray(result.projects))throw Error("Restore response was invalid");
+  projects=result.projects;persist();renderProjects();
+  toast(`Restored ${projects.length} projects; added ${result.restored.assets} assets and ${result.restored.exports} exports.`);
+ }catch(err){toast("Full restore failed: "+err.message)}
+ e.target.value="";
+};
 $("themeBtn").onclick=()=>document.body.classList.toggle("light");
 renderProjects();
 })();

@@ -45,3 +45,5 @@ button:active{transform:translateY(0)}
 }
 
 .scene-preview{display:block;width:100%;max-width:720px;max-height:520px;object-fit:contain;border-radius:12px;margin-top:10px;background:#111}
+
+.backup-actions{display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end}.backup-actions button:disabled{opacity:.65;cursor:wait}
