@@ -22,3 +22,8 @@ Release 2.1 adds per-Short 9:16 MP4 trimming/rendering from uploaded video clips
 Release 2.4: security hardening for ComfyUI output retrieval and bounded render error reporting. See RELEASE_NOTES_2.4.md.
 
 Release 2.6: backend startup marks interrupted local generation jobs as failed/retryable after restart. See RELEASE_NOTES_2.6.md.
+
+Release 2.7 improves AI Engine diagnostics so configured provider URLs are not confused with services that are actually reachable.
+
+
+Release 2.8 adds persistent scene-image jobs. See RELEASE_NOTES_2.8.md and BUILD_STATUS.md for verified scope and remaining external setup.

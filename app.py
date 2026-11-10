@@ -26,7 +26,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="2.6.0")
+app = FastAPI(title="MyTube AI private backend", version="2.8.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -210,7 +210,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"2.6.0",
+    return {"status":"ok","engine":"MyTube AI","version":"2.7.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,

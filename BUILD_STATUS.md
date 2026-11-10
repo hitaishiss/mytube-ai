@@ -1,26 +1,27 @@
-# Build status — Release 2.6
+# Build status — Release 2.8
 
 ## Implemented in this codebase
 - Local Ollama text/production jobs and persisted job tracking.
 - Configurable provider submission, polling, retry and output-import contracts for video, voice and music.
-- ComfyUI image submission/status/output routes; scene image UI accepts a caller-supplied API workflow.
-- Persisted ComfyUI image jobs now support status refresh and importing generated images into managed project assets.
+- ComfyUI image submission/status/output routes with caller-supplied API workflows.
+- Scene image generation now uses durable backend jobs; scene job IDs/status persist in project state and can be refreshed after reload. Completed image outputs import into managed project assets.
 - Subtitle cue formatting endpoint (SRT/VTT) and production-pack subtitle text drafts.
 - FFmpeg full-video rendering in 16:9/9:16, watermark placement and multi-track audio mixing.
 - Individual Shorts trimming/rendering to 9:16, watermark, status refresh and download links.
 - Local project backup and restore.
-- Release 2.3 fixes: engine health checks use the configured API base; Shorts crop and watermark are applied in one FFmpeg filter chain.
-- Release 2.4 hardening: ComfyUI image output path validation and bounded image retrieval.
+- Backend restart recovery for interrupted local jobs.
+- Engine diagnostics distinguish configured endpoints from reachable services.
 
-## Release 2.5 changes
-- Persisted ComfyUI image jobs can be refreshed from the standard jobs interface.
-- Completed ComfyUI image outputs can be imported into MyTube's managed asset library.
+## Release 2.8 changes
+- Replaced browser-only ComfyUI scene image submission with persistent backend image jobs.
+- Added per-scene refresh and automatic asset import after successful completion.
+- Updated service-worker cache and backend version to 2.8.0.
 
 ## Verified in this build environment
-- Python syntax compilation passed.
-- JavaScript syntax check passed.
-- FastAPI image-job refresh + image import integration test passed with mocked ComfyUI responses.
-- FastAPI route registration: 27 routes.
+- Python syntax compilation.
+- JavaScript syntax check.
+- Persistent image-job lifecycle test using mocked ComfyUI responses.
+- ZIP integrity.
 
 ## Not verified / requires external setup
 - Live deployment and connection to the user's Codespace.
@@ -28,9 +29,4 @@
 - Actual external video/TTS/music provider execution.
 - Full production run with real project media.
 
-Important: adapters are integration points, not bundled generation models. A configured endpoint is not represented as a functioning generator until it passes its own health and job tests.
-
-## Release 2.6 changes
-- Backend startup now marks interrupted queued/processing local text and production jobs as failed with a retry instruction. This prevents jobs from appearing permanently active after Codespace/container restarts.
-- Remote provider jobs are left intact for status refresh; the backend does not falsely mark them failed merely because its own process restarted.
-- Backend version is 2.6.0.
+Adapters are integration points, not bundled generation models. A configured endpoint or passing mock test does not establish that a real media generator is operational.
