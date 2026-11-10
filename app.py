@@ -1,4 +1,5 @@
 import os, sqlite3, threading, uuid, json, time, shutil, subprocess, tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 from urllib.request import Request, urlopen
@@ -26,7 +27,13 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="2.8.0")
+app = FastAPI(title="MyTube AI private backend", version="2.10.0")
+# Bound background work to protect small Codespaces from large scene batches.
+try:
+    MAX_WORKERS = max(1, min(8, int(os.getenv("MYTUBE_MAX_WORKERS", "3"))))
+except (TypeError, ValueError):
+    MAX_WORKERS = 3
+JOB_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="mytube-worker")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -59,6 +66,27 @@ def init_db():
                 message='Backend restarted before this local job finished. Retry the job.',
                 error='Worker interrupted by backend restart.', updated_at=?
             WHERE status IN ('queued','processing') AND kind IN ('text','production')""",
+            (stamp,))
+        # A queued task has not yet been handed to a provider, so it cannot be
+        # refreshed remotely. Mark it retryable instead of leaving it queued.
+        c.execute("""UPDATE jobs
+            SET status='failed', progress=0,
+                message='Backend restarted before this queued task was submitted. Retry the job.',
+                error='Queued task interrupted by backend restart.', updated_at=?
+            WHERE status='queued' AND kind IN ('image','video','voice','music')""",
+            (stamp,))
+        # Preserve submitted media tasks only when a remote provider identifier
+        # exists; otherwise there is nothing external to poll after restart.
+        c.execute("""UPDATE jobs
+            SET status='failed', progress=0,
+                message='Backend restarted before provider submission completed. Retry the job.',
+                error='Media task had no provider job identifier at restart.', updated_at=?
+            WHERE status='processing' AND kind IN ('image','video','voice','music')
+              AND (output_json IS NULL OR
+                   (json_extract(output_json, '$.promptId') IS NULL AND
+                    json_extract(output_json, '$.prompt_id') IS NULL AND
+                    json_extract(output_json, '$.jobId') IS NULL AND
+                    json_extract(output_json, '$.job_id') IS NULL))""",
             (stamp,))
 init_db()
 
@@ -210,7 +238,7 @@ def health():
     video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
     voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
     music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"2.7.0",
+    return {"status":"ok","engine":"MyTube AI","version":"2.10.0",
         "adapters":{
             "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
             "image":image_status,
@@ -218,7 +246,7 @@ def health():
             "voice":voice_status,
             "music":music_status,
             "render":{"available":bool(ffmpeg),"provider":"ffmpeg" if ffmpeg else None}
-        },"storage":{"assets":ASSET_DIR,"exports":EXPORT_DIR,"maxUploadMB":MAX_UPLOAD_MB}}
+        },"runtime":{"maxWorkers":MAX_WORKERS},"storage":{"assets":ASSET_DIR,"exports":EXPORT_DIR,"maxUploadMB":MAX_UPLOAD_MB}}
 
 @app.post("/api/jobs", status_code=202)
 def create_job(body: JobIn, authorization: str | None = Header(default=None)):
@@ -230,7 +258,7 @@ def create_job(body: JobIn, authorization: str | None = Header(default=None)):
             (job_id,body.projectId,body.kind,"queued",0,"Queued.",json.dumps(body.input),
              None,None,stamp,stamp))
     # One background thread per submitted job; SQLite persists job state across restarts.
-    threading.Thread(target=run_job,args=(job_id,body.kind,body.input),daemon=True).start()
+    JOB_EXECUTOR.submit(run_job, job_id, body.kind, body.input)
     with connect() as c:
         row=c.execute("SELECT * FROM jobs WHERE job_id=?",(job_id,)).fetchone()
     return job_dict(row)
@@ -262,7 +290,7 @@ def queue_production(body: ProductionQueueIn, authorization: str | None = Header
             jobs.append({"jobId":jid,"kind":kind,"sceneNumber":payload.get("sceneNumber")})
     for job in jobs:
         with connect() as c: row=c.execute("SELECT input_json FROM jobs WHERE job_id=?",(job["jobId"],)).fetchone()
-        threading.Thread(target=run_job,args=(job["jobId"],job["kind"],json.loads(row["input_json"])),daemon=True).start()
+        JOB_EXECUTOR.submit(run_job, job["jobId"], job["kind"], json.loads(row["input_json"]))
     return {"projectId":body.projectId,"queued":len(jobs),"jobs":jobs,"message":"Queued jobs. Provider acceptance is not the same as completed media; inspect each job status."}
 
 
@@ -294,7 +322,7 @@ def retry_job(job_id: str, authorization: str | None = Header(default=None)):
              "Retry queued from failed job.", old["input_json"], None, None, stamp, stamp))
         row = c.execute("SELECT * FROM jobs WHERE job_id=?", (new_id,)).fetchone()
     inp = json.loads(old["input_json"] or "{}")
-    threading.Thread(target=run_job, args=(new_id, old["kind"], inp), daemon=True).start()
+    JOB_EXECUTOR.submit(run_job, new_id, old["kind"], inp)
     return job_dict(row)
 
 
@@ -517,7 +545,7 @@ def render_video(body: RenderIn, authorization: str | None = Header(default=None
     audios=[safe_asset(x) for x in body.audioTracks]
     render_id=uuid.uuid4().hex
     output=os.path.join(EXPORT_DIR, f"{render_id}.mp4")
-    threading.Thread(target=_render_worker,args=(clips,audios,body,output),daemon=True).start()
+    JOB_EXECUTOR.submit(_render_worker, clips, audios, body, output)
     return {"renderId":render_id,"status":"processing","message":"Render started"}
 
 
@@ -604,7 +632,7 @@ def render_short(body: ShortRenderIn, authorization: str | None = Header(default
     source = safe_asset(body.assetId)
     render_id = uuid.uuid4().hex
     output = os.path.join(EXPORT_DIR, render_id + ".mp4")
-    threading.Thread(target=_short_render_worker, args=(source, body, output), daemon=True).start()
+    JOB_EXECUTOR.submit(_short_render_worker, source, body, output)
     return {"renderId": render_id, "status": "processing", "format": "9:16"}
 
 

@@ -30,3 +30,9 @@
 - Full production run with real project media.
 
 Adapters are integration points, not bundled generation models. A configured endpoint or passing mock test does not establish that a real media generator is operational.
+
+
+## Release 2.9 update
+- Bounded background worker pool (default 3, configurable 1–8).
+- Real media models/providers remain external configuration requirements.
+\n## Release 2.10\n- Queued media jobs recover as retryable failures after restart.\n- Processing media jobs without remote IDs recover as retryable failures.\n- Invalid worker-pool configuration safely falls back to three workers.\n\n## Release 2.11\n- Individual Shorts are atomically published only after a successful, non-empty FFmpeg output.\n- Actual sample Short render tested at 720x1280 with audio and watermark.\n
