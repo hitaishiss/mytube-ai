@@ -517,7 +517,6 @@ def list_jobs(projectId: str | None = None, authorization: str | None = Header(d
             rows=c.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100").fetchall()
     return [job_dict(r) for r in rows]
 
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
 
@@ -525,7 +524,30 @@ from pathlib import Path
 def studio():
     return FileResponse("index.html")
 
-from fastapi.staticfiles import StaticFiles
+
+@app.get("/styles.css")
+def styles():
+    return FileResponse("styles.css", media_type="text/css")
+
+
+@app.get("/app.js")
+def frontend_script():
+    return FileResponse("app.js", media_type="application/javascript")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return FileResponse("manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse("sw.js", media_type="application/javascript")
+
+
+@app.get("/icon.svg")
+def icon():
+    return FileResponse("icon.svg", media_type="image/svg+xml")
 
 
 @app.get("/assets/{filename}")
@@ -535,10 +557,29 @@ def get_asset(filename: str):
         raise HTTPException(status_code=404, detail="Generated asset not found.")
     return FileResponse(path)
 
+
+def safe_audio(filename):
+    filename = os.path.basename(str(filename or ""))
+    if not filename or filename in (".", ".."):
+        raise HTTPException(status_code=404, detail="Generated audio not found.")
+    base = os.path.abspath("generated_audio")
+    path = os.path.abspath(os.path.join(base, filename))
+    if os.path.commonpath([base, path]) != base:
+        raise HTTPException(status_code=404, detail="Generated audio not found.")
+    return path
+
+
+@app.get("/generated_audio/{filename}")
+def get_generated_audio(filename: str):
+    path = safe_audio(filename)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Generated audio not found.")
+    return FileResponse(path, media_type="audio/wav")
+
+
 @app.get("/api/media/health")
 def media_health():
-    return {"image": image_status(), "video": {**comfyui_status(), "ffmpeg_available": bool(shutil.which("ffmpeg"))},
+    video = comfyui_status()
+    return {"image": image_status(), "video": {**video, "ffmpeg_available": bool(shutil.which("ffmpeg"))},
             "music": {"available": True, "ai_available": bool(MUSIC_API_URL), "engine": "configured local AI service" if MUSIC_API_URL else "procedural synthesizer"},
             "render": {"available": bool(shutil.which("ffmpeg"))}}
-
-app.mount("/", StaticFiles(directory=".", html=True), name="studio")
