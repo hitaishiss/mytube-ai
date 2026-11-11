@@ -182,10 +182,31 @@ def _replace_workflow_values(value, replacements):
     if isinstance(value, list):
         return [_replace_workflow_values(item, replacements) for item in value]
     if isinstance(value, str):
+        # Preserve JSON types when a node input consists of one placeholder.
+        # Embedded placeholders remain strings, as expected for prompts/text.
+        if value.startswith("{{") and value.endswith("}}") and value.count("{{") == 1:
+            key = value[2:-2]
+            if key in replacements:
+                return replacements[key]
         for key, replacement in replacements.items():
             value = value.replace("{{" + key + "}}", str(replacement))
         return value
     return value
+
+
+def _find_comfyui_video(history):
+    allowed = {".mp4", ".webm", ".mov", ".mkv", ".gif"}
+    for node in (history or {}).get("outputs", {}).values():
+        if not isinstance(node, dict):
+            continue
+        for key in ("videos", "gifs", "files"):
+            for entry in node.get(key) or []:
+                if not isinstance(entry, dict):
+                    continue
+                filename = str(entry.get("filename") or "")
+                if os.path.splitext(filename)[1].lower() in allowed:
+                    return entry
+    return None
 
 
 def generate_comfyui_video(inp):
@@ -231,28 +252,24 @@ def generate_comfyui_video(inp):
         raise RuntimeError("ComfyUI did not return a prompt_id: " + str(queued)[:300])
     deadline = time.time() + max(300, min(3600, int(inp.get("timeout", 1800))))
     history = None
+    video_file = None
     while time.time() < deadline:
         time.sleep(3)
         req = Request(COMFYUI_URL + "/history/" + prompt_id, headers={"Accept": "application/json"})
         with urlopen(req, timeout=15) as response:
             history = json.loads(response.read().decode("utf-8")).get(prompt_id)
-        if history and history.get("outputs"):
-            break
-        if history and history.get("status", {}).get("status_str") == "error":
-            raise RuntimeError("ComfyUI workflow failed. Check its console for node details.")
-    if not history or not history.get("outputs"):
-        raise RuntimeError("ComfyUI video generation timed out before producing output.")
-    video_file = None
-    for node in history["outputs"].values():
-        for key in ("gifs", "videos", "files"):
-            entries = node.get(key) or []
-            if entries:
-                video_file = entries[0]
-                break
+        if not history:
+            continue
+        video_file = _find_comfyui_video(history)
         if video_file:
             break
+        status = history.get("status", {})
+        if status.get("status_str") == "error" or status.get("completed") is False and status.get("status_str") == "error":
+            raise RuntimeError("ComfyUI workflow failed. Check its console for node details.")
+        if status.get("status_str") in ("success", "completed") or status.get("completed") is True:
+            raise RuntimeError("ComfyUI workflow completed without a supported video file. Configure a video output node.")
     if not video_file:
-        raise RuntimeError("Workflow completed but returned no video file. Configure a video output node.")
+        raise RuntimeError("ComfyUI video generation timed out before producing a video output.");
     from urllib.parse import urlencode
     params = {"filename": video_file.get("filename", ""), "subfolder": video_file.get("subfolder", ""),
               "type": video_file.get("type", "output")}
