@@ -1,29 +1,47 @@
-MYTUBE AI — RELEASE 1.6
+MYTUBE AI — FINAL CONSOLIDATED PACKAGE 3.0
 
-This is a private, self-hosted studio. Extract this package into your existing Codespace repository, replacing the matching app files, then run your existing start.sh.
+This archive contains the complete current MyTube AI application source in the archive root.
+It is designed to be extracted into the ROOT of the existing GitHub/Codespace repository,
+replacing matching application files. It deliberately does NOT include the live SQLite jobs
+database or mytube_data media directory, so extracting it will not overwrite those runtime
+data stores.
 
-The local Ollama text model powers script and production-pack drafts. The Production Workflow can queue scene video, dialogue voice and soundtrack jobs when compatible providers are configured in the backend environment. Provider acceptance is not the same as a finished media asset.
+STARTUP
+1. Open the existing Codespace repository folder (the folder containing index.html).
+2. Extract/replace the contents of this archive into that repository root.
+3. Run: bash start.sh
+4. In MyTube AI → AI Engine, enter the HTTPS forwarded URL for Codespaces port 8000
+   and select “Save connection & test”. If MYTUBE_API_TOKEN is enabled on the backend,
+   enter the same token in the optional token field.
 
-FFmpeg can assemble uploaded/authorized clips and audio into MP4, including 9:16 vertical output. This renderer does not generate video from text.
+Do not create a new repository or Codespace. Keep the existing mytube_data directory and
+mytube_jobs.sqlite3 file if present. GitHub Pages hosts the frontend; the Codespace runs
+the backend. Its forwarded URL may change after a Codespace restart.
 
-Do not put API keys in app.js or commit them. Configure secrets only in the private backend environment. No paid provider is enabled by default.
+WHAT IS INCLUDED
+- Project workspace, script/production drafting via local Ollama, characters, Story Bible,
+  scene planning, voice/song briefs, Shorts planning, watermark and Smart Export UI.
+- SQLite-backed job tracking and restart recovery.
+- Upload/asset library, ComfyUI image workflow adapter, generic video/TTS/music provider
+  adapters, provider polling/import, subtitles, FFmpeg MP4 and Short rendering.
+- Browser project backup, full ZIP backup and full restore.
+- Saved private-backend URL and optional bearer-token connection support.
 
-See BUILD_STATUS.md and ENGINE_INTEGRATION.md for exact capabilities and dependencies.
+IMPORTANT LIMITATIONS — NOT CLAIMED AS COMPLETE
+- Ollama provides text generation only; it is not an image, video, voice or music generator.
+- ComfyUI requires a separately running server, installed models and a compatible API workflow.
+- Video, TTS and music adapters require compatible provider services configured privately.
+  A configured URL is not proof that a provider works.
+- FFmpeg edits/encodes uploaded or generated assets; it does not generate cinematic footage.
+- GitHub Pages/Codespaces deployment and real provider operation must be verified in the user's
+  account. This package was not deployed to that account by the build process.
+- Codespaces may stop when idle; a free always-on backend is not guaranteed.
+- No paid service or billing is enabled by default.
 
-Release 1.8 adds automatic polling and import of completed media from configured providers. Providers must implement GET /jobs/{id}/output returning raw supported media. See RELEASE_NOTES_1.8.md.
+SECURITY
+- Never commit provider API keys or backend tokens to the public frontend or repository.
+- Use HTTPS for remote backend URLs. The optional backend token is stored in this browser's
+  local storage; use it only on a trusted personal device.
+- Keep backups of the existing mytube_jobs.sqlite3 and mytube_data directory.
 
-
-RELEASE 1.9: To generate scene stills, start ComfyUI on a reachable host, export a workflow in API format, open MyTube AI → AI Engine, paste the JSON, enter the positive CLIPTextEncode node ID, and save. Then open Scenes and choose Generate scene image. No image model is bundled.
-
-Release 2.0 adds media queue status persistence and failed-job retry. See RELEASE_NOTES_2.0.md and BUILD_STATUS.md.
-
-Release 2.1 adds per-Short 9:16 MP4 trimming/rendering from uploaded video clips. See RELEASE_NOTES_2.1.md and BUILD_STATUS.md.
-
-Release 2.4: security hardening for ComfyUI output retrieval and bounded render error reporting. See RELEASE_NOTES_2.4.md.
-
-Release 2.6: backend startup marks interrupted local generation jobs as failed/retryable after restart. See RELEASE_NOTES_2.6.md.
-
-Release 2.7 improves AI Engine diagnostics so configured provider URLs are not confused with services that are actually reachable.
-
-
-Release 2.8 adds persistent scene-image jobs. See RELEASE_NOTES_2.8.md and BUILD_STATUS.md for verified scope and remaining external setup.
+See FINAL_STATUS.md and ENGINE_INTEGRATION.md for the precise handover.

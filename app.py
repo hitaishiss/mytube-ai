@@ -27,7 +27,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="2.14.0")
+app = FastAPI(title="MyTube AI private backend", version="3.0.0")
 # Bound background work to protect small Codespaces from large scene batches.
 try:
     MAX_WORKERS = max(1, min(8, int(os.getenv("MYTUBE_MAX_WORKERS", "3"))))
@@ -109,6 +109,13 @@ class ProductionQueueIn(BaseModel):
 def check_auth(authorization: str | None):
     if APP_TOKEN and authorization != f"Bearer {APP_TOKEN}":
         raise HTTPException(status_code=401, detail="Invalid backend token")
+
+
+@app.get("/api/session")
+def api_session(authorization: str | None = Header(default=None)):
+    """Authenticated connectivity probe for the MyTube frontend."""
+    check_auth(authorization)
+    return {"ok": True, "app": "MyTube AI", "version": app.version}
 
 
 @app.post("/api/backup")

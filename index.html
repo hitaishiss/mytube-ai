@@ -18,6 +18,7 @@
 <button id="createBtn" class="primary">Create project</button>
 </section>
 <section class="panel"><div class="section-head"><h2>Your projects</h2><div class="backup-actions"><button id="backupBtn" class="secondary">Export projects</button><button id="fullBackupBtn" class="secondary">Full backup + media</button></div></div><div id="projectList" class="project-list"></div><label class="restore">Restore project JSON<input type="file" id="restoreFile" accept="application/json"></label><label class="restore">Restore full backup + media<input type="file" id="restoreFullFile" accept=".zip,application/zip"></label></section>
+<section class="panel notice"><h2>Backend connection</h2><p>Open any project → AI Engine to save your private Codespace port 8000 forwarded URL. The saved address is reused on this device for all backend actions. Keep your Codespace port private when possible; an optional backend token is supported.</p></section>
 <section class="panel notice"><h2>Studio status</h2><p>The studio includes local text-generation integration, production planning, optional media-engine adapters and FFmpeg rendering. Actual image, video, voice and music generation depends on the models and providers configured on your private backend.</p></section>
 </main>
 <dialog id="workspace">

@@ -1,4 +1,4 @@
-# Build status — Release 2.8
+# Build status — Release 2.15
 
 ## Implemented in this codebase
 - Local Ollama text/production jobs and persisted job tracking.
@@ -52,3 +52,10 @@ Adapters are integration points, not bundled generation models. A configured end
 - Added validated full ZIP restore for projects plus missing media assets/exports.
 - Preserves existing files and active jobs database.
 - See RELEASE_NOTES_2.14.md.
+
+
+## Release 2.15
+- Saved Codespace backend URL and optional bearer-token support added to AI Engine.
+- GitHub Pages avoids incorrectly assuming its own origin is the API backend.
+- Authenticated `/api/session` capability probe added.
+- Protected image previews and download links now use authenticated fetches rather than unauthenticated direct file links.
