@@ -40,6 +40,18 @@ class MediaPipelineTests(unittest.TestCase):
                 app.generate_image({"prompt": "A quiet street", "steps": 100})
             request.assert_not_called()
 
+    def test_comfyui_workflow_placeholders_are_replaced_recursively(self):
+        source = {"1": {"inputs": {"text": "{{prompt}}", "image": "{{image}}", "frames": "{{frames}}"}}}
+        result = app._replace_workflow_values(source, {"prompt": "A quiet scene", "image": "scene.png", "frames": 49})
+        self.assertEqual(result["1"]["inputs"]["text"], "A quiet scene")
+        self.assertEqual(result["1"]["inputs"]["image"], "scene.png")
+        self.assertEqual(result["1"]["inputs"]["frames"], "49")
+
+    def test_comfyui_video_requires_explicit_server_configuration(self):
+        with patch.object(app, "COMFYUI_URL", ""):
+            with self.assertRaisesRegex(RuntimeError, "MYTUBE_COMFYUI_URL"):
+                app.generate_comfyui_video({"prompt": "A scene"})
+
     def test_asset_path_stays_inside_asset_directory(self):
         path = app.safe_asset("../example.wav")
         self.assertEqual(os.path.dirname(path), os.path.abspath(self.temp_dir.name))
