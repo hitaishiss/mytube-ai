@@ -1,4 +1,4 @@
-import os, sqlite3, threading, uuid, json, time
+import os, sqlite3, threading, uuid, json, time, shutil, subprocess
 from datetime import datetime, timezone
 from typing import Any
 from urllib.request import Request, urlopen
@@ -169,6 +169,60 @@ def health():
         "image":{"available":False},"video":{"available":False},
         "voice":{"available":False},"music":{"available":False}
     }}
+
+class VoiceIn(BaseModel):
+    projectId: str = Field(min_length=1, max_length=120)
+    text: str = Field(min_length=1, max_length=3000)
+    style: str = Field(default="Warm", max_length=40)
+    delivery: str = Field(default="Conversational", max_length=40)
+
+VOICE_STYLES = {
+    "Warm": (165, 48), "Calm": (145, 42), "Bright": (190, 58),
+    "Deep": (135, 30), "Gentle": (150, 38), "Playful": (190, 62),
+    "Mysterious": (130, 35), "Narrator": (155, 42), "Custom": (165, 50)
+}
+
+@app.get("/api/voice/health")
+def voice_health():
+    engine = shutil.which("espeak-ng") or shutil.which("espeak")
+    return {"available": bool(engine), "engine": os.path.basename(engine) if engine else None,
+            "message": "Local speech engine ready." if engine else
+            "Install espeak-ng (or espeak) on the backend host to enable voice previews."}
+
+@app.post("/api/voice/generate", status_code=201)
+def generate_voice(body: VoiceIn, authorization: str | None = Header(default=None)):
+    check_auth(authorization)
+    engine = shutil.which("espeak-ng") or shutil.which("espeak")
+    if not engine:
+        raise HTTPException(status_code=503, detail="No local speech engine is installed. Install espeak-ng on the backend host.")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Enter dialogue before generating.")
+    speed, pitch = VOICE_STYLES.get(body.style, VOICE_STYLES["Warm"])
+    if body.delivery == "Whispered":
+        speed, pitch = max(115, speed - 15), max(25, pitch - 8)
+    elif body.delivery == "Dramatic":
+        speed, pitch = max(120, speed - 10), min(75, pitch + 4)
+    elif body.delivery == "Confident":
+        speed, pitch = speed + 8, min(75, pitch + 3)
+    elif body.delivery == "Emotional":
+        speed = max(120, speed - 8)
+    out_dir = Path("generated_audio")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}.wav"
+    output = out_dir / filename
+    try:
+        subprocess.run([engine, "-s", str(speed), "-p", str(pitch), "-w", str(output), "--", text],
+                       check=True, capture_output=True, timeout=45)
+    except subprocess.TimeoutExpired:
+        output.unlink(missing_ok=True)
+        raise HTTPException(status_code=504, detail="Voice preview timed out.")
+    except subprocess.CalledProcessError as exc:
+        output.unlink(missing_ok=True)
+        detail = exc.stderr.decode("utf-8", "replace")[:300] if exc.stderr else "Speech engine failed."
+        raise HTTPException(status_code=500, detail=detail)
+    return {"status": "completed", "audioUrl": f"/generated_audio/{filename}",
+            "filename": filename, "engine": os.path.basename(engine)}
 
 @app.post("/api/jobs", status_code=202)
 def create_job(body: JobIn, authorization: str | None = Header(default=None)):
