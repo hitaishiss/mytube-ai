@@ -1,0 +1,45 @@
+name: MyTube AI checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "codex/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Check Python syntax
+        run: python -m compileall -q app.py tests
+      - name: Run media pipeline tests
+        run: python -m unittest discover -s tests -v
+      - name: Import backend application
+        run: python -c "from app import app; print(app.title)"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check JavaScript syntax
+        run: node --check app.js
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+      - name: Build backend container
+        run: docker build --tag mytube-ai-backend:ci .

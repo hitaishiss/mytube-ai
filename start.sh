@@ -2,6 +2,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Install the optional local speech engine when this host supports apt and
+# the startup process has root privileges. Otherwise continue without voice.
+if ! command -v espeak-ng >/dev/null 2>&1 && ! command -v espeak >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends espeak-ng
+  else
+    echo "Voice preview disabled: install espeak-ng on this backend host to enable it."
+  fi
+fi
+
 # Start Ollama automatically if it is not already running.
 if ! curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
   nohup ollama serve >/tmp/mytube-ollama.log 2>&1 </dev/null &

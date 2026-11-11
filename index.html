@@ -18,7 +18,7 @@
 <button id="createBtn" class="primary">Create project</button>
 </section>
 <section class="panel"><div class="section-head"><h2>Your projects</h2><button id="backupBtn" class="secondary">Export backup</button></div><div id="projectList" class="project-list"></div><label class="restore">Restore backup<input type="file" id="restoreFile" accept="application/json"></label></section>
-<section class="panel notice"><h2>Studio status</h2><p>This build is a production-planning workspace. AI text/image/video/voice/music generation and video rendering are not connected yet. It will not pretend to generate media that it cannot generate.</p></section>
+<section class="panel notice"><h2>Studio status</h2><p>The studio connects to a local backend for scripts, voice previews and media jobs. Image generation, AI video and AI music each require compatible local model services; FFmpeg and procedural music provide basic fallbacks. Check AI Engine for live capability status. The free-first setup uses local models and tools, so generation speed depends on your device.</p></section>
 </main>
 <dialog id="workspace">
 <div class="workspace-head"><div><p class="eyebrow">PROJECT WORKSPACE</p><h2 id="projectName"></h2></div><button id="closeWorkspace" class="ghost">Close</button></div>
