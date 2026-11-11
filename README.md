@@ -30,7 +30,7 @@ Requirements: Python 3.11+, Ollama, and (optional for voice preview) eSpeak NG.
 3. Install eSpeak NG if voice previews are needed.
 4. Start the API: uvicorn app:app --host 127.0.0.1 --port 8000
 
-The API health endpoint is /health. It reports which capabilities are available on the current host.
+The API health endpoint is /health. It reports which capabilities are available on the current host. The backend serves only the studio HTML, JavaScript, stylesheet, manifest, icon, generated media and generated audio routes; it does not expose the repository directory as a general static file tree.
 
 ## Configuration
 
