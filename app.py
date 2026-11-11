@@ -167,7 +167,7 @@ def health():
     return {"status":"ok","engine":"MyTube AI","adapters":{
         "text":{"available":local["available"],"installed":local["installed"],"model":local["model"]},
         "image":{"available":False},"video":{"available":False},
-        "voice":{"available":False},"music":{"available":False}
+        "voice":{"available":bool(shutil.which("espeak-ng") or shutil.which("espeak"))},"music":{"available":False}
     }}
 
 class VoiceIn(BaseModel):
