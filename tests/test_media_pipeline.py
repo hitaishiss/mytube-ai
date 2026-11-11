@@ -18,6 +18,10 @@ class MediaPipelineTests(unittest.TestCase):
         app.ASSET_DIR = self.old_asset_dir
         self.temp_dir.cleanup()
 
+    def test_studio_root_route_serves_index_html(self):
+        response = app.root()
+        self.assertEqual(response.path, "index.html")
+
     def test_music_generator_writes_valid_wav(self):
         result = app.generate_music({"mood": "Hopeful", "duration": 5})
         path = app.safe_asset(result["filename"])
