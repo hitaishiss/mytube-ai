@@ -1,0 +1,44 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ollama-model:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command: ["ollama pull qwen2.5:3b"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    restart: "no"
+
+  backend:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      ollama-model:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      MYTUBE_DB_PATH: /data/mytube_jobs.sqlite3
+      MYTUBE_ALLOWED_ORIGINS: ${MYTUBE_ALLOWED_ORIGINS:-https://hitaishiss.github.io}
+      MYTUBE_API_TOKEN: ${MYTUBE_API_TOKEN:-}
+    volumes:
+      - mytube_data:/data
+      - generated_audio:/app/generated_audio
+
+volumes:
+  ollama_data:
+  mytube_data:
+  generated_audio:
