@@ -12,6 +12,9 @@ DB_PATH = os.getenv("MYTUBE_DB_PATH", "mytube_jobs.sqlite3")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 TEXT_MODEL = os.getenv("MYTUBE_TEXT_MODEL", "qwen2.5:3b")
 IMAGE_API_URL = os.getenv("MYTUBE_IMAGE_API_URL", "http://127.0.0.1:7860")
+COMFYUI_URL = os.getenv("MYTUBE_COMFYUI_URL", "").rstrip("/")
+COMFYUI_WORKFLOW_FILE = os.getenv("MYTUBE_COMFYUI_WORKFLOW_FILE", "comfyui_workflow_api.json")
+MUSIC_API_URL = os.getenv("MYTUBE_MUSIC_API_URL", "").rstrip("/")
 ASSET_DIR = os.getenv("MYTUBE_ASSET_DIR", "generated_assets")
 os.makedirs(ASSET_DIR, exist_ok=True)
 ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
@@ -160,7 +163,134 @@ def generate_image(inp):
         f.write(raw)
     return {"filename": filename, "url": "/assets/" + filename, "provider": "Stable Diffusion"}
 
+
+def comfyui_status():
+    if not COMFYUI_URL:
+        return {"available": False, "configured": False, "provider": "ComfyUI"}
+    try:
+        req = Request(COMFYUI_URL + "/system_stats", headers={"Accept": "application/json"})
+        with urlopen(req, timeout=3) as response:
+            json.loads(response.read().decode("utf-8"))
+        return {"available": True, "configured": True, "provider": "ComfyUI"}
+    except Exception as exc:
+        return {"available": False, "configured": True, "provider": "ComfyUI", "error": str(exc)[:180]}
+
+
+def _replace_workflow_values(value, replacements):
+    if isinstance(value, dict):
+        return {key: _replace_workflow_values(item, replacements) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_workflow_values(item, replacements) for item in value]
+    if isinstance(value, str):
+        for key, replacement in replacements.items():
+            value = value.replace("{{" + key + "}}", str(replacement))
+        return value
+    return value
+
+
+def generate_comfyui_video(inp):
+    if not COMFYUI_URL:
+        raise RuntimeError("Set MYTUBE_COMFYUI_URL to enable ComfyUI AI video.")
+    if not os.path.isfile(COMFYUI_WORKFLOW_FILE):
+        raise RuntimeError("ComfyUI workflow file is missing: " + COMFYUI_WORKFLOW_FILE)
+    with open(COMFYUI_WORKFLOW_FILE, "r", encoding="utf-8") as handle:
+        workflow = json.load(handle)
+    if not isinstance(workflow, dict) or not workflow:
+        raise RuntimeError("ComfyUI workflow must be a non-empty API-format JSON object.")
+    images = inp.get("images") or ([inp["image"]] if inp.get("image") else [])
+    uploaded = ""
+    if images:
+        image_path = safe_asset(images[0])
+        boundary = "----MyTubeAI" + uuid.uuid4().hex
+        with open(image_path, "rb") as handle:
+            image_bytes = handle.read()
+        body = (("--" + boundary + "\r\n").encode()
+                + ('Content-Disposition: form-data; name="image"; filename="' + os.path.basename(image_path) + '"\r\n').encode()
+                + b"Content-Type: application/octet-stream\r\n\r\n" + image_bytes
+                + ("\r\n--" + boundary + "--\r\n").encode())
+        upload_req = Request(COMFYUI_URL + "/upload/image", data=body,
+                             headers={"Content-Type": "multipart/form-data; boundary=" + boundary})
+        with urlopen(upload_req, timeout=120) as response:
+            uploaded = json.loads(response.read().decode("utf-8")).get("name", "")
+        if not uploaded:
+            raise RuntimeError("ComfyUI did not return an uploaded image name.")
+    replacements = {
+        "prompt": str(inp.get("prompt") or inp.get("videoPrompt") or "Cinematic dramatic scene, natural movement"),
+        "image": uploaded,
+        "width": int(inp.get("width", 768)), "height": int(inp.get("height", 512)),
+        "frames": int(inp.get("frames", 49)), "fps": int(inp.get("fps", 16)),
+        "seed": int(inp.get("seed", int(time.time()) % 2147483647))
+    }
+    workflow = _replace_workflow_values(workflow, replacements)
+    req = Request(COMFYUI_URL + "/prompt", data=json.dumps({"prompt": workflow}).encode("utf-8"),
+                  headers={"Content-Type": "application/json"})
+    with urlopen(req, timeout=60) as response:
+        queued = json.loads(response.read().decode("utf-8"))
+    prompt_id = queued.get("prompt_id")
+    if not prompt_id:
+        raise RuntimeError("ComfyUI did not return a prompt_id: " + str(queued)[:300])
+    deadline = time.time() + max(300, min(3600, int(inp.get("timeout", 1800))))
+    history = None
+    while time.time() < deadline:
+        time.sleep(3)
+        req = Request(COMFYUI_URL + "/history/" + prompt_id, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=15) as response:
+            history = json.loads(response.read().decode("utf-8")).get(prompt_id)
+        if history and history.get("outputs"):
+            break
+        if history and history.get("status", {}).get("status_str") == "error":
+            raise RuntimeError("ComfyUI workflow failed. Check its console for node details.")
+    if not history or not history.get("outputs"):
+        raise RuntimeError("ComfyUI video generation timed out before producing output.")
+    video_file = None
+    for node in history["outputs"].values():
+        for key in ("gifs", "videos", "files"):
+            entries = node.get(key) or []
+            if entries:
+                video_file = entries[0]
+                break
+        if video_file:
+            break
+    if not video_file:
+        raise RuntimeError("Workflow completed but returned no video file. Configure a video output node.")
+    from urllib.parse import urlencode
+    params = {"filename": video_file.get("filename", ""), "subfolder": video_file.get("subfolder", ""),
+              "type": video_file.get("type", "output")}
+    req = Request(COMFYUI_URL + "/view?" + urlencode(params))
+    with urlopen(req, timeout=300) as response:
+        raw = response.read()
+    extension = os.path.splitext(params["filename"])[1] or ".mp4"
+    filename = uuid.uuid4().hex + extension
+    with open(safe_asset(filename), "wb") as handle:
+        handle.write(raw)
+    return {"filename": filename, "url": "/assets/" + filename,
+            "provider": "ComfyUI AI video workflow", "sourcePromptId": prompt_id}
+
+
+def generate_remote_music(inp):
+    if not MUSIC_API_URL:
+        return None
+    payload = {"prompt": str(inp.get("prompt") or inp.get("mood") or "cinematic instrumental"),
+               "duration": max(5, min(180, int(inp.get("duration", 30))))}
+    req = Request(MUSIC_API_URL + "/generate", data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"})
+    with urlopen(req, timeout=900) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    encoded = data.get("audio_base64")
+    if not encoded:
+        raise RuntimeError("Music provider must return audio_base64 in its JSON response.")
+    raw = base64.b64decode(encoded, validate=True)
+    filename = uuid.uuid4().hex + (".wav" if data.get("format", "wav").lower() == "wav" else ".mp3")
+    with open(safe_asset(filename), "wb") as handle:
+        handle.write(raw)
+    return {"filename": filename, "url": "/assets/" + filename,
+            "duration": payload["duration"], "provider": "Configured local AI music service"}
+
+
 def generate_music(inp):
+    remote = generate_remote_music(inp)
+    if remote:
+        return remote
     duration = max(5, min(180, int(inp.get("duration", 30))))
     mood = str(inp.get("mood") or "Suspense").lower()
     progressions = {
@@ -252,7 +382,7 @@ def run_job(job_id, kind, inp):
             output = generate_music(inp)
         elif kind == "video":
             update_job(job_id, progress=25, message="Assembling video from generated images…")
-            output = render_video(inp)
+            output = generate_comfyui_video(inp) if COMFYUI_URL else render_video(inp)
         elif kind == "render":
             update_job(job_id, progress=25, message="Rendering final MP4…")
             output = mux_export(inp)
@@ -279,8 +409,8 @@ def health():
     local=ollama_status()
     return {"status":"ok","engine":"MyTube AI","adapters":{
         "text":{"available":local["available"],"installed":local["installed"],"model":local["model"]},
-        "image":image_status(),"video":{"available":bool(shutil.which("ffmpeg")),"engine":"FFmpeg still-image assembler"},
-        "voice":{"available":bool(shutil.which("espeak-ng") or shutil.which("espeak"))},"music":{"available":True,"engine":"Built-in procedural synthesizer"},"render":{"available":bool(shutil.which("ffmpeg")),"engine":"FFmpeg MP4 muxer"}
+        "image":image_status(),"video":{"available":comfyui_status()["available"] or bool(shutil.which("ffmpeg")),"ai_available":comfyui_status()["available"],"engine":"ComfyUI AI video" if comfyui_status()["available"] else "FFmpeg still-image assembler"},
+        "voice":{"available":bool(shutil.which("espeak-ng") or shutil.which("espeak"))},"music":{"available":True,"ai_available":bool(MUSIC_API_URL),"engine":"Configured local AI music service" if MUSIC_API_URL else "Built-in procedural synthesizer"},"render":{"available":bool(shutil.which("ffmpeg")),"engine":"FFmpeg MP4 muxer"}
     }}
 
 class VoiceIn(BaseModel):
@@ -390,8 +520,8 @@ def get_asset(filename: str):
 
 @app.get("/api/media/health")
 def media_health():
-    return {"image": image_status(), "video": {"available": bool(shutil.which("ffmpeg"))},
-            "music": {"available": True, "engine": "procedural synthesizer"},
+    return {"image": image_status(), "video": {**comfyui_status(), "ffmpeg_available": bool(shutil.which("ffmpeg"))},
+            "music": {"available": True, "ai_available": bool(MUSIC_API_URL), "engine": "configured local AI service" if MUSIC_API_URL else "procedural synthesizer"},
             "render": {"available": bool(shutil.which("ffmpeg"))}}
 
 app.mount("/", StaticFiles(directory=".", html=True), name="studio")
