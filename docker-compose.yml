@@ -34,11 +34,16 @@ services:
       MYTUBE_DB_PATH: /data/mytube_jobs.sqlite3
       MYTUBE_ALLOWED_ORIGINS: ${MYTUBE_ALLOWED_ORIGINS:-https://hitaishiss.github.io}
       MYTUBE_API_TOKEN: ${MYTUBE_API_TOKEN:-}
+      MYTUBE_IMAGE_API_URL: ${MYTUBE_IMAGE_API_URL:-http://host.docker.internal:7860}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - mytube_data:/data
       - generated_audio:/app/generated_audio
+      - generated_assets:/app/generated_assets
 
 volumes:
   ollama_data:
   mytube_data:
   generated_audio:
+  generated_assets:
