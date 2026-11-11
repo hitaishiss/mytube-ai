@@ -1,4 +1,4 @@
-import os, sqlite3, threading, uuid, json, time, shutil, subprocess
+import os, sqlite3, threading, uuid, json, time, shutil, subprocess, base64, math, wave, struct
 from datetime import datetime, timezone
 from typing import Any
 from urllib.request import Request, urlopen
@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 DB_PATH = os.getenv("MYTUBE_DB_PATH", "mytube_jobs.sqlite3")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 TEXT_MODEL = os.getenv("MYTUBE_TEXT_MODEL", "qwen2.5:3b")
+IMAGE_API_URL = os.getenv("MYTUBE_IMAGE_API_URL", "http://127.0.0.1:7860")
+ASSET_DIR = os.getenv("MYTUBE_ASSET_DIR", "generated_assets")
+os.makedirs(ASSET_DIR, exist_ok=True)
 ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
     "MYTUBE_ALLOWED_ORIGINS", "https://hitaishiss.github.io"
 ).split(",") if x.strip()]
@@ -45,7 +48,7 @@ init_db()
 
 class JobIn(BaseModel):
     projectId: str = Field(min_length=1, max_length=120)
-    kind: str = Field(pattern="^(text|image|video|voice|music)$")
+    kind: str = Field(pattern="^(text|image|video|voice|music|render)$")
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
 
@@ -114,41 +117,145 @@ def update_job(job_id, **values):
         c.execute(f"UPDATE jobs SET {cols} WHERE job_id=?", [*values.values(),job_id])
 
 
+def safe_asset(name):
+    name = os.path.basename(str(name or ""))
+    if not name or name in (".", ".."):
+        raise RuntimeError("A valid generated asset filename is required.")
+    path = os.path.abspath(os.path.join(ASSET_DIR, name))
+    if os.path.commonpath([os.path.abspath(ASSET_DIR), path]) != os.path.abspath(ASSET_DIR):
+        raise RuntimeError("Invalid asset path.")
+    return path
+
+def image_status():
+    try:
+        req = Request(IMAGE_API_URL.rstrip("/") + "/sdapi/v1/options", headers={"Accept":"application/json"})
+        with urlopen(req, timeout=2):
+            return {"available": True, "provider": "AUTOMATIC1111-compatible Stable Diffusion API"}
+    except Exception:
+        return {"available": False, "provider": "AUTOMATIC1111-compatible Stable Diffusion API"}
+
+def generate_image(inp):
+    prompt = str(inp.get("prompt") or "").strip()
+    if not prompt:
+        raise RuntimeError("Add an image prompt.")
+    payload = {"prompt": prompt, "negative_prompt": str(inp.get("negativePrompt") or "blurry, low quality, distorted"),
+               "steps": int(inp.get("steps", 20)), "width": int(inp.get("width", 768)),
+               "height": int(inp.get("height", 512)), "cfg_scale": 7, "batch_size": 1}
+    req = Request(IMAGE_API_URL.rstrip("/") + "/sdapi/v1/txt2img",
+                  data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
+    with urlopen(req, timeout=600) as response:
+        data = json.loads(response.read().decode())
+    images = data.get("images") or []
+    if not images:
+        raise RuntimeError("Image provider returned no image.")
+    raw = base64.b64decode(images[0].split(",",1)[-1])
+    filename = uuid.uuid4().hex + ".png"
+    with open(safe_asset(filename), "wb") as f:
+        f.write(raw)
+    return {"filename": filename, "url": "/assets/" + filename, "provider": "Stable Diffusion"}
+
+def generate_music(inp):
+    duration = max(5, min(180, int(inp.get("duration", 30))))
+    mood = str(inp.get("mood") or "Suspense").lower()
+    progressions = {
+        "suspense": [110, 116.54, 98, 103.83], "sad": [220, 261.63, 196, 174.61],
+        "romantic": [261.63, 329.63, 392, 349.23], "hopeful": [261.63, 329.63, 392, 440],
+        "joyful": [261.63, 329.63, 392, 523.25], "mysterious": [146.83, 155.56, 220, 164.81],
+        "triumphant": [196, 246.94, 293.66, 392], "playful": [293.66, 349.23, 440, 392]
+    }
+    notes = progressions.get(mood, progressions["suspense"])
+    rate = 22050
+    filename = uuid.uuid4().hex + ".wav"
+    path = safe_asset(filename)
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(rate)
+        chunk = 4096
+        total = duration * rate
+        for start in range(0, total, chunk):
+            frames = bytearray()
+            for n in range(start, min(start+chunk,total)):
+                t = n / rate
+                beat = int(t / 2.0) % len(notes)
+                freq = notes[beat]
+                fade = min(1.0, t/1.2, (duration-t)/1.5)
+                # Original synthesized pad + quiet arpeggio; no sampled/copyright music.
+                sample = (math.sin(2*math.pi*freq*t) * 0.12 +
+                          math.sin(2*math.pi*freq*1.5*t) * 0.035 +
+                          math.sin(2*math.pi*freq*2*t) * 0.018) * max(0,fade)
+                frames.extend(struct.pack("<h", int(max(-1,min(1,sample))*32767)))
+            wav.writeframes(frames)
+    return {"filename": filename, "url": "/assets/" + filename, "duration": duration,
+            "provider": "Built-in procedural music synthesizer"}
+
+def render_video(inp):
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("FFmpeg is required for video rendering.")
+    images = inp.get("images") or ([inp["image"]] if inp.get("image") else [])
+    images = [safe_asset(x) for x in images]
+    if not images:
+        raise RuntimeError("Generate at least one image before creating a video.")
+    duration = max(2, min(30, float(inp.get("secondsPerImage", 4))))
+    output_name = uuid.uuid4().hex + ".mp4"
+    output = safe_asset(output_name)
+    # Create a simple motion sequence from supplied generated stills.
+    inputs = []
+    for image_path in images:
+        inputs += ["-loop", "1", "-t", str(duration), "-i", image_path]
+    filters = "".join(f"[{i}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v{i}];" for i in range(len(images)))
+    filters += "".join(f"[v{i}]" for i in range(len(images))) + f"concat=n={len(images)}:v=1:a=0[outv]"
+    cmd = [ffmpeg, "-y", *inputs, "-filter_complex", filters, "-map", "[outv]",
+           "-an", "-r", "24", "-c:v", "libx264", "-preset", "veryfast", output]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=900)
+    return {"filename": output_name, "url": "/assets/" + output_name,
+            "duration": round(duration*len(images),1), "provider": "FFmpeg still-image video assembler"}
+
+def mux_export(inp):
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("FFmpeg is required for MP4 export.")
+    video = safe_asset(inp.get("video"))
+    audio_name = inp.get("audio")
+    output_name = uuid.uuid4().hex + ".mp4"
+    output = safe_asset(output_name)
+    cmd = [ffmpeg, "-y", "-i", video]
+    if audio_name:
+        cmd += ["-i", safe_asset(audio_name), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-shortest"]
+    else:
+        cmd += ["-c:v", "copy"]
+    cmd += ["-movflags", "+faststart", output]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=900)
+    return {"filename": output_name, "url": "/assets/" + output_name, "provider": "FFmpeg MP4 export"}
+
 def run_job(job_id, kind, inp):
     try:
-        update_job(job_id, status="processing", progress=10,
-                   message="Preparing generation…")
-        if kind != "text":
-            raise RuntimeError(
-                f"The {kind} adapter is not installed yet."
-            )
-        prompt = str(inp.get("prompt") or inp.get("idea") or "").strip()
-        if not prompt:
-            raise RuntimeError("Add a prompt or story idea before generating.")
-
-        system = str(inp.get("system") or
-            "You are MyTube AI's original drama-writing assistant. "
-            "Write compelling scenes with clear character motivations, "
-            "natural dialogue and consistent story facts.")
-
-        update_job(job_id, progress=35, message="Loading local model…")
-
-        def report_progress(text):
-            # Real progress based on streamed output, not a fixed percentage.
-            progress = min(94, 40 + len(text) // 180)
-            update_job(job_id, progress=progress,
-                       message=f"Writing script… {len(text)} characters received")
-
-        result = ollama_generate(prompt, system, report_progress)
-        update_job(
-            job_id, status="completed", progress=100,
-            message="Script generation completed.",
-            output_json=json.dumps({"text": result}, ensure_ascii=False),
-            error=None
-        )
+        update_job(job_id, status="processing", progress=10, message="Preparing " + kind + " job…")
+        if kind == "text":
+            prompt = str(inp.get("prompt") or inp.get("idea") or "").strip()
+            if not prompt: raise RuntimeError("Add a prompt or story idea before generating.")
+            system = str(inp.get("system") or "You are MyTube AI's original drama-writing assistant. Write compelling scenes with clear character motivations and natural dialogue.")
+            def report_progress(text):
+                update_job(job_id, progress=min(94,40+len(text)//180), message=f"Writing script… {len(text)} characters received")
+            result = ollama_generate(prompt, system, report_progress)
+            output = {"text": result}
+        elif kind == "image":
+            update_job(job_id, progress=25, message="Sending prompt to local image model…")
+            output = generate_image(inp)
+        elif kind == "music":
+            update_job(job_id, progress=25, message="Composing original synthesized music…")
+            output = generate_music(inp)
+        elif kind == "video":
+            update_job(job_id, progress=25, message="Assembling video from generated images…")
+            output = render_video(inp)
+        elif kind == "render":
+            update_job(job_id, progress=25, message="Rendering final MP4…")
+            output = mux_export(inp)
+        else:
+            raise RuntimeError("Unsupported generation type.")
+        update_job(job_id, status="completed", progress=100, message=kind.capitalize()+" job completed.",
+                   output_json=json.dumps(output, ensure_ascii=False), error=None)
     except Exception as e:
-        update_job(job_id, status="failed", progress=0,
-                   message="Generation failed.", error=str(e))
+        update_job(job_id, status="failed", progress=0, message="Generation failed.", error=str(e))
 def job_dict(row):
     d=dict(row)
     d["input"]=json.loads(d.pop("input_json"))
@@ -166,8 +273,8 @@ def health():
     local=ollama_status()
     return {"status":"ok","engine":"MyTube AI","adapters":{
         "text":{"available":local["available"],"installed":local["installed"],"model":local["model"]},
-        "image":{"available":False},"video":{"available":False},
-        "voice":{"available":bool(shutil.which("espeak-ng") or shutil.which("espeak"))},"music":{"available":False},"render":{"available":False,"ffmpeg_installed":bool(shutil.which("ffmpeg"))}
+        "image":image_status(),"video":{"available":bool(shutil.which("ffmpeg")),"engine":"FFmpeg still-image assembler"},
+        "voice":{"available":bool(shutil.which("espeak-ng") or shutil.which("espeak"))},"music":{"available":True,"engine":"Built-in procedural synthesizer"},"render":{"available":bool(shutil.which("ffmpeg")),"engine":"FFmpeg MP4 muxer"}
     }}
 
 class VoiceIn(BaseModel):
@@ -267,3 +374,17 @@ def studio():
 
 from fastapi.staticfiles import StaticFiles
 app.mount("/", StaticFiles(directory=".", html=True), name="studio")
+
+
+@app.get("/assets/{filename}")
+def get_asset(filename: str):
+    path = safe_asset(filename)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Generated asset not found.")
+    return FileResponse(path)
+
+@app.get("/api/media/health")
+def media_health():
+    return {"image": image_status(), "video": {"available": bool(shutil.which("ffmpeg"))},
+            "music": {"available": True, "engine": "procedural synthesizer"},
+            "render": {"available": bool(shutil.which("ffmpeg"))}}
