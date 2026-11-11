@@ -1,24 +1,14 @@
-import os, sqlite3, threading, uuid, json, time, shutil, subprocess, tempfile, zipfile
-from concurrent.futures import ThreadPoolExecutor
+import os, sqlite3, threading, uuid, json, time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-from fastapi import FastAPI, HTTPException, Header, Body
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi import UploadFile, File, Form
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 DB_PATH = os.getenv("MYTUBE_DB_PATH", "mytube_jobs.sqlite3")
-DATA_DIR = os.path.abspath(os.getenv("MYTUBE_DATA_DIR", "mytube_data"))
-ASSET_DIR = os.path.join(DATA_DIR, "assets")
-EXPORT_DIR = os.path.join(DATA_DIR, "exports")
-os.makedirs(ASSET_DIR, exist_ok=True)
-os.makedirs(EXPORT_DIR, exist_ok=True)
-MAX_UPLOAD_MB = int(os.getenv("MYTUBE_MAX_UPLOAD_MB", "500"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 TEXT_MODEL = os.getenv("MYTUBE_TEXT_MODEL", "qwen2.5:3b")
 ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
@@ -26,14 +16,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 ).split(",") if x.strip()]
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
-STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="3.0.0")
-# Bound background work to protect small Codespaces from large scene batches.
-try:
-    MAX_WORKERS = max(1, min(8, int(os.getenv("MYTUBE_MAX_WORKERS", "3"))))
-except (TypeError, ValueError):
-    MAX_WORKERS = 3
-JOB_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="mytube-worker")
+app = FastAPI(title="MyTube AI private backend", version="0.2.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -58,205 +41,17 @@ def init_db():
             input_json TEXT NOT NULL, output_json TEXT, error TEXT,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         )""")
-        # Background threads do not survive a Codespace/container restart.
-        # Mark interrupted local work explicitly instead of leaving it stuck forever.
-        stamp = now()
-        c.execute("""UPDATE jobs
-            SET status='failed', progress=0,
-                message='Backend restarted before this local job finished. Retry the job.',
-                error='Worker interrupted by backend restart.', updated_at=?
-            WHERE status IN ('queued','processing') AND kind IN ('text','production')""",
-            (stamp,))
-        # A queued task has not yet been handed to a provider, so it cannot be
-        # refreshed remotely. Mark it retryable instead of leaving it queued.
-        c.execute("""UPDATE jobs
-            SET status='failed', progress=0,
-                message='Backend restarted before this queued task was submitted. Retry the job.',
-                error='Queued task interrupted by backend restart.', updated_at=?
-            WHERE status='queued' AND kind IN ('image','video','voice','music')""",
-            (stamp,))
-        # Preserve submitted media tasks only when a remote provider identifier
-        # exists; otherwise there is nothing external to poll after restart.
-        c.execute("""UPDATE jobs
-            SET status='failed', progress=0,
-                message='Backend restarted before provider submission completed. Retry the job.',
-                error='Media task had no provider job identifier at restart.', updated_at=?
-            WHERE status='processing' AND kind IN ('image','video','voice','music')
-              AND (output_json IS NULL OR
-                   (json_extract(output_json, '$.promptId') IS NULL AND
-                    json_extract(output_json, '$.prompt_id') IS NULL AND
-                    json_extract(output_json, '$.jobId') IS NULL AND
-                    json_extract(output_json, '$.job_id') IS NULL))""",
-            (stamp,))
 init_db()
 
 class JobIn(BaseModel):
     projectId: str = Field(min_length=1, max_length=120)
-    kind: str = Field(pattern="^(text|production|image|video|voice|music)$")
+    kind: str = Field(pattern="^(text|image|video|voice|music)$")
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
-
-class ProductionQueueIn(BaseModel):
-    projectId: str = Field(min_length=1, max_length=120)
-    scenes: list[dict[str, Any]] = Field(min_length=1, max_length=100)
-    characters: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
-    musicPrompt: str = Field(default="", max_length=8000)
-    includeVoice: bool = True
-    includeVideo: bool = True
-    includeMusic: bool = True
-
 
 def check_auth(authorization: str | None):
     if APP_TOKEN and authorization != f"Bearer {APP_TOKEN}":
         raise HTTPException(status_code=401, detail="Invalid backend token")
-
-
-@app.get("/api/session")
-def api_session(authorization: str | None = Header(default=None)):
-    """Authenticated connectivity probe for the MyTube frontend."""
-    check_auth(authorization)
-    return {"ok": True, "app": "MyTube AI", "version": app.version}
-
-
-@app.post("/api/backup")
-def create_full_backup(payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)):
-    """Create a portable archive of browser projects, backend jobs, assets and rendered exports."""
-    check_auth(authorization)
-    if payload.get("app") != "MyTube AI" or not isinstance(payload.get("projects"), list):
-        raise HTTPException(status_code=400, detail="Expected a MyTube AI project backup payload")
-    backup_id = uuid.uuid4().hex
-    archive_path = os.path.join(EXPORT_DIR, f"mytube-full-backup-{backup_id}.zip")
-    snapshot_path = os.path.join(EXPORT_DIR, f"jobs-{backup_id}.sqlite3")
-    try:
-        # SQLite's backup API gives a consistent snapshot while jobs may be updating.
-        with db_lock:
-            source = sqlite3.connect(DB_PATH, timeout=30)
-            target = sqlite3.connect(snapshot_path)
-            try:
-                source.backup(target)
-            finally:
-                target.close()
-                source.close()
-        manifest = {
-            "app": "MyTube AI",
-            "formatVersion": 1,
-            "createdAt": now(),
-            "contents": ["projects.json", "backend/jobs.sqlite3", "backend/assets/", "backend/exports/"]
-        }
-        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=3) as archive:
-            archive.writestr("manifest.json", json.dumps(manifest, indent=2))
-            archive.writestr("projects.json", json.dumps(payload["projects"], ensure_ascii=False, indent=2))
-            archive.write(snapshot_path, "backend/jobs.sqlite3")
-            for folder, arc_prefix in ((ASSET_DIR, "backend/assets"), (EXPORT_DIR, "backend/exports")):
-                for current, _, files in os.walk(folder):
-                    for filename in files:
-                        full = os.path.join(current, filename)
-                        if (os.path.abspath(full) in (os.path.abspath(archive_path), os.path.abspath(snapshot_path))
-                                or filename.startswith(("mytube-full-backup-", "jobs-"))):
-                            continue
-                        rel = os.path.relpath(full, folder)
-                        archive.write(full, f"{arc_prefix}/{rel}")
-        return FileResponse(archive_path, media_type="application/zip",
-                            filename="mytube-ai-full-backup.zip",
-                            background=None)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        try:
-            if os.path.exists(archive_path): os.remove(archive_path)
-        except OSError:
-            pass
-        raise HTTPException(status_code=500, detail=f"Backup could not be created: {exc}")
-    finally:
-        try:
-            if os.path.exists(snapshot_path): os.remove(snapshot_path)
-        except OSError:
-            pass
-
-
-@app.post("/api/backup/restore")
-async def restore_full_backup(file: UploadFile = File(...), authorization: str | None = Header(default=None)):
-    """Safely restore browser projects and add missing media files from a MyTube AI full backup."""
-    check_auth(authorization)
-    if not (file.filename or "").lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Choose a MyTube AI .zip backup")
-    temp_path = os.path.join(EXPORT_DIR, f"restore-{uuid.uuid4().hex}.zip")
-    restored = {"assets": 0, "exports": 0}
-    try:
-        total = 0
-        with open(temp_path, "wb") as out:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > 2 * 1024 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="Backup exceeds the 2 GB restore limit")
-                out.write(chunk)
-        with zipfile.ZipFile(temp_path, "r") as archive:
-            infos = archive.infolist()
-            if len(infos) > 20000:
-                raise HTTPException(status_code=400, detail="Backup contains too many files")
-            names = set()
-            expanded = 0
-            for info in infos:
-                name = info.filename.replace("\\\\", "/")
-                parts = name.split("/")
-                if name.startswith("/") or any(p in ("", ".", "..") for p in parts if p != ""):
-                    raise HTTPException(status_code=400, detail="Backup contains an unsafe file path")
-                if name in names:
-                    raise HTTPException(status_code=400, detail="Backup contains duplicate paths")
-                names.add(name)
-                mode = (info.external_attr >> 16) & 0o170000
-                if mode == 0o120000:
-                    raise HTTPException(status_code=400, detail="Backup contains a symbolic link")
-                expanded += info.file_size
-                if expanded > 4 * 1024 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="Expanded backup exceeds the 4 GB restore limit")
-            try:
-                manifest = json.loads(archive.read("manifest.json"))
-                projects = json.loads(archive.read("projects.json"))
-            except Exception:
-                raise HTTPException(status_code=400, detail="This is not a valid MyTube AI full backup")
-            if manifest.get("app") != "MyTube AI" or manifest.get("formatVersion") != 1 or not isinstance(projects, list):
-                raise HTTPException(status_code=400, detail="Unsupported MyTube AI backup format")
-            for info in infos:
-                name = info.filename.replace("\\\\", "/")
-                if info.is_dir():
-                    continue
-                if name.startswith("backend/assets/"):
-                    target_root, counter = ASSET_DIR, "assets"
-                    rel = name[len("backend/assets/"):]
-                elif name.startswith("backend/exports/"):
-                    target_root, counter = EXPORT_DIR, "exports"
-                    rel = name[len("backend/exports/"):]
-                else:
-                    continue
-                if not rel or rel.startswith("/") or any(x in ("", ".", "..") for x in rel.split("/")):
-                    raise HTTPException(status_code=400, detail="Backup contains an unsafe media path")
-                target = os.path.abspath(os.path.join(target_root, rel))
-                if os.path.commonpath([os.path.abspath(target_root), target]) != os.path.abspath(target_root):
-                    raise HTTPException(status_code=400, detail="Backup media path escapes its destination")
-                if os.path.exists(target):
-                    continue
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                with archive.open(info) as src, open(target, "xb") as dst:
-                    shutil.copyfileobj(src, dst, length=1024 * 1024)
-                restored[counter] += 1
-        return {"ok": True, "projects": projects, "restored": restored,
-                "note": "Projects restored. Existing media files and the current jobs database were preserved."}
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Backup ZIP is damaged or invalid")
-    finally:
-        try:
-            await file.close()
-        except Exception:
-            pass
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
 
 def ollama_status():
     try:
@@ -268,103 +63,92 @@ def ollama_status():
     except Exception:
         return {"available": False, "model": TEXT_MODEL, "installed": False}
 
+
 def ollama_generate(prompt: str, system: str = "", progress_callback=None):
     payload = {
-        "model": TEXT_MODEL, "prompt": prompt, "system": system,
-        "stream": True, "keep_alive": "10m",
-        "options": {"num_predict": 900, "num_ctx": 4096, "temperature": 0.7}
+        "model": TEXT_MODEL,
+        "prompt": prompt,
+        "system": system,
+        "stream": True,
+        "keep_alive": "10m",
+        "options": {
+            "num_predict": 900,
+            "num_ctx": 4096,
+            "temperature": 0.7
+        }
     }
-    req = Request(OLLAMA_URL.rstrip("/") + "/api/generate",
+    req = Request(
+        OLLAMA_URL.rstrip("/") + "/api/generate",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json"}
+    )
     parts = []
     try:
-        with urlopen(req, timeout=900) as response:
-            for line in response:
-                if not line.strip():
-                    continue
+        with urlopen(req, timeout=600) as response:
+            while True:
+                line = response.readline()
+                if not line:
+                    break
                 item = json.loads(line.decode("utf-8"))
-                if item.get("error"):
-                    raise RuntimeError(item["error"])
                 piece = item.get("response", "")
                 if piece:
                     parts.append(piece)
                     if progress_callback:
                         progress_callback("".join(parts))
+                if item.get("error"):
+                    raise RuntimeError(item["error"])
                 if item.get("done"):
                     break
         result = "".join(parts).strip()
         if not result:
-            raise RuntimeError("The local model returned an empty response.")
+            raise RuntimeError("Ollama returned an empty response.")
         return result
     except HTTPError as e:
-        raise RuntimeError(f"Local model error ({e.code}): " + e.read().decode("utf-8", "replace")[:500])
+        raise RuntimeError("Ollama HTTP error: " + e.read().decode("utf-8", "replace")[:500])
     except URLError as e:
         raise RuntimeError("Cannot reach Ollama at " + OLLAMA_URL + ": " + str(e))
-
 def update_job(job_id, **values):
     values["updated_at"]=now()
     cols=", ".join(f"{k}=?" for k in values)
     with connect() as c:
         c.execute(f"UPDATE jobs SET {cols} WHERE job_id=?", [*values.values(),job_id])
 
+
 def run_job(job_id, kind, inp):
     try:
-        update_job(job_id, status="processing", progress=5, message="Preparing generation…")
+        update_job(job_id, status="processing", progress=10,
+                   message="Preparing generation…")
+        if kind != "text":
+            raise RuntimeError(
+                f"The {kind} adapter is not installed yet."
+            )
         prompt = str(inp.get("prompt") or inp.get("idea") or "").strip()
         if not prompt:
             raise RuntimeError("Add a prompt or story idea before generating.")
-        if kind in ("image", "video", "voice", "music"):
-            update_job(job_id, progress=15, message=f"Submitting {kind} request to configured engine…")
-            if kind == "image":
-                from backend.media_engines import comfyui_submit
-                result = comfyui_submit(prompt, inp.get("workflow"))
-            else:
-                from backend.media_engines import configured_provider_submit
-                env = {"video":"MYTUBE_VIDEO_API_URL", "voice":"MYTUBE_TTS_API_URL", "music":"MYTUBE_MUSIC_API_URL"}[kind]
-                label = {"video":"Video", "voice":"Speech", "music":"Music"}[kind]
-                result = configured_provider_submit(env, label, {"projectId": inp.get("projectId"), "prompt": prompt, "input": inp})
-            update_job(job_id, status="submitted", progress=25,
-                       message=f"{kind.title()} request accepted. Provider-side completion and asset retrieval are not yet standardized.",
-                       output_json=json.dumps(result, ensure_ascii=False), error=None)
-            return
-        if kind not in ("text", "production"):
-            raise RuntimeError(f"Unsupported job kind: {kind}")
+
         system = str(inp.get("system") or
-            "You are MyTube AI's original drama-writing assistant. Write compelling "
-            "scenes with clear motivations, natural dialogue and continuity.")
-        update_job(job_id, progress=10, message="Connecting to local model…")
-        # Throttle SQLite writes: Ollama can stream hundreds of small chunks.
-        # Updating the jobs table for every chunk creates needless lock/IO pressure
-        # and can interrupt long generations in constrained Codespaces.
-        last_progress = {"chars": 0, "time": time.monotonic()}
-        def on_piece(text):
-            now_mono = time.monotonic()
-            chars = len(text)
-            if chars - last_progress["chars"] >= 600 or now_mono - last_progress["time"] >= 3:
-                progress = min(95, 10 + chars // 100)
-                update_job(job_id, progress=progress,
-                           message=f"Generating script · {chars} characters received…")
-                last_progress["chars"] = chars
-                last_progress["time"] = now_mono
-        result = ollama_generate(prompt, system, on_piece)
-        # Persist final progress and output together only after Ollama completes.
-        if kind == "production":
-            try:
-                structured = json.loads(result)
-            except Exception:
-                structured = {"production_notes": result, "format_warning": "Model did not return strict JSON."}
-            output = {"production": structured, "text": result}
-            message = "Production pack generated. Review before production."
-        else:
-            output = {"text": result}
-            message = "Script generation completed."
-        update_job(job_id, status="completed", progress=100,
-                   message=message, output_json=json.dumps(output, ensure_ascii=False), error=None)
+            "You are MyTube AI's original drama-writing assistant. "
+            "Write compelling scenes with clear character motivations, "
+            "natural dialogue and consistent story facts.")
+
+        update_job(job_id, progress=35, message="Loading local model…")
+
+        def report_progress(text):
+            # Real progress based on streamed output, not a fixed percentage.
+            progress = min(94, 40 + len(text) // 180)
+            update_job(job_id, progress=progress,
+                       message=f"Writing script… {len(text)} characters received")
+
+        result = ollama_generate(prompt, system, report_progress)
+        update_job(
+            job_id, status="completed", progress=100,
+            message="Script generation completed.",
+            output_json=json.dumps({"text": result}, ensure_ascii=False),
+            error=None
+        )
     except Exception as e:
         update_job(job_id, status="failed", progress=0,
                    message="Generation failed.", error=str(e))
-
 def job_dict(row):
     d=dict(row)
     d["input"]=json.loads(d.pop("input_json"))
@@ -373,28 +157,18 @@ def job_dict(row):
     d["createdAt"]=d.pop("created_at"); d["updatedAt"]=d.pop("updated_at")
     return d
 
-@app.get("/", include_in_schema=False)
+@app.get("/")
 def root():
-    return FileResponse(os.path.join(STUDIO_DIR, "index.html"))
+    return FileResponse("index.html")
 
 @app.get("/health")
 def health():
-    from backend.media_engines import comfyui_status, provider_status
     local=ollama_status()
-    ffmpeg=shutil.which("ffmpeg")
-    image_status=comfyui_status()
-    video_status=provider_status("MYTUBE_VIDEO_API_URL","Configured video provider")
-    voice_status=provider_status("MYTUBE_TTS_API_URL","Configured speech provider")
-    music_status=provider_status("MYTUBE_MUSIC_API_URL","Configured music provider")
-    return {"status":"ok","engine":"MyTube AI","version":"2.11.0",
-        "adapters":{
-            "text":{"available":local["available"],"installed":local["installed"],"model":local["model"],"provider":"ollama"},
-            "image":image_status,
-            "video":video_status,
-            "voice":voice_status,
-            "music":music_status,
-            "render":{"available":bool(ffmpeg),"provider":"ffmpeg" if ffmpeg else None}
-        },"runtime":{"maxWorkers":MAX_WORKERS},"storage":{"assets":ASSET_DIR,"exports":EXPORT_DIR,"maxUploadMB":MAX_UPLOAD_MB}}
+    return {"status":"ok","engine":"MyTube AI","adapters":{
+        "text":{"available":local["available"],"installed":local["installed"],"model":local["model"]},
+        "image":{"available":False},"video":{"available":False},
+        "voice":{"available":False},"music":{"available":False}
+    }}
 
 @app.post("/api/jobs", status_code=202)
 def create_job(body: JobIn, authorization: str | None = Header(default=None)):
@@ -406,41 +180,10 @@ def create_job(body: JobIn, authorization: str | None = Header(default=None)):
             (job_id,body.projectId,body.kind,"queued",0,"Queued.",json.dumps(body.input),
              None,None,stamp,stamp))
     # One background thread per submitted job; SQLite persists job state across restarts.
-    JOB_EXECUTOR.submit(run_job, job_id, body.kind, body.input)
+    threading.Thread(target=run_job,args=(job_id,body.kind,body.input),daemon=True).start()
     with connect() as c:
         row=c.execute("SELECT * FROM jobs WHERE job_id=?",(job_id,)).fetchone()
     return job_dict(row)
-
-@app.post("/api/production/queue", status_code=202)
-def queue_production(body: ProductionQueueIn, authorization: str | None = Header(default=None)):
-    """Queue scene-level media tasks; real generation requires configured providers."""
-    check_auth(authorization)
-    tasks=[]
-    cast=json.dumps(body.characters,ensure_ascii=False)
-    for index, scene in enumerate(body.scenes,1):
-        label=str(scene.get("slugline") or scene.get("title") or f"Scene {index}")[:180]
-        visual=str(scene.get("visual_prompt") or scene.get("action") or scene.get("description") or "").strip()
-        dialogue=str(scene.get("dialogue_summary") or scene.get("dialogue") or "").strip()
-        if body.includeVideo and visual:
-            tasks.append(("video",{"prompt":f"Cinematic scene: {label}. Visual direction: {visual}. Camera: {scene.get('camera','cinematic')}. Lighting: {scene.get('lighting','story-appropriate')}. Cast continuity: {cast}","sceneNumber":index}))
-        if body.includeVoice and dialogue:
-            tasks.append(("voice",{"prompt":f"Generate dialogue audio for {label}. Dialogue: {dialogue}. Voice directions: {cast}","sceneNumber":index}))
-    if body.includeMusic and body.musicPrompt.strip():
-        tasks.append(("music",{"prompt":body.musicPrompt.strip(),"scope":"project soundtrack"}))
-    if not tasks:
-        raise HTTPException(status_code=422,detail="No usable scene visual prompts, dialogue, or music brief were found.")
-    stamp=now(); jobs=[]
-    with connect() as c:
-        for kind,payload in tasks:
-            jid=str(uuid.uuid4()); inp={**payload,"projectId":body.projectId}
-            c.execute("INSERT INTO jobs(job_id,project_id,kind,status,progress,message,input_json,output_json,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (jid,body.projectId,kind,"queued",0,"Queued by production orchestrator.",json.dumps(inp,ensure_ascii=False),None,None,stamp,stamp))
-            jobs.append({"jobId":jid,"kind":kind,"sceneNumber":payload.get("sceneNumber")})
-    for job in jobs:
-        with connect() as c: row=c.execute("SELECT input_json FROM jobs WHERE job_id=?",(job["jobId"],)).fetchone()
-        JOB_EXECUTOR.submit(run_job, job["jobId"], job["kind"], json.loads(row["input_json"]))
-    return {"projectId":body.projectId,"queued":len(jobs),"jobs":jobs,"message":"Queued jobs. Provider acceptance is not the same as completed media; inspect each job status."}
-
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str, authorization: str | None = Header(default=None)):
@@ -449,155 +192,6 @@ def get_job(job_id: str, authorization: str | None = Header(default=None)):
         row=c.execute("SELECT * FROM jobs WHERE job_id=?",(job_id,)).fetchone()
     if not row: raise HTTPException(status_code=404,detail="Job not found")
     return job_dict(row)
-
-
-@app.post("/api/jobs/{job_id}/retry", status_code=202)
-def retry_job(job_id: str, authorization: str | None = Header(default=None)):
-    """Create a fresh attempt from a failed job's original input."""
-    check_auth(authorization)
-    with connect() as c:
-        old = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-    if not old:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if old["status"] != "failed":
-        raise HTTPException(status_code=409, detail="Only failed jobs can be retried")
-    new_id = str(uuid.uuid4())
-    stamp = now()
-    with connect() as c:
-        c.execute("""INSERT INTO jobs(job_id,project_id,kind,status,progress,message,input_json,
-            output_json,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-            (new_id, old["project_id"], old["kind"], "queued", 0,
-             "Retry queued from failed job.", old["input_json"], None, None, stamp, stamp))
-        row = c.execute("SELECT * FROM jobs WHERE job_id=?", (new_id,)).fetchone()
-    inp = json.loads(old["input_json"] or "{}")
-    JOB_EXECUTOR.submit(run_job, new_id, old["kind"], inp)
-    return job_dict(row)
-
-
-@app.post("/api/jobs/{job_id}/refresh")
-def refresh_job(job_id: str, authorization: str | None = Header(default=None)):
-    """Refresh submitted video, speech or music jobs using GET /jobs/{id}."""
-    check_auth(authorization)
-    with connect() as c:
-        row = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Job not found")
-    current = job_dict(row)
-    if current["status"] not in ("submitted", "processing", "queued"):
-        return current
-    kind = current["kind"]
-    if kind == "image":
-        output = current.get("output") or {}
-        prompt_id = output.get("promptId") or output.get("prompt_id")
-        if not prompt_id:
-            return current
-        try:
-            from backend.media_engines import comfyui_history
-            history = comfyui_history(prompt_id)
-            item = history.get(prompt_id) or {}
-            outputs = []
-            for node_id, node in (item.get("outputs") or {}).items():
-                for image_item in node.get("images", []):
-                    outputs.append({"nodeId": node_id, "filename": image_item.get("filename"),
-                                    "subfolder": image_item.get("subfolder", ""),
-                                    "type": image_item.get("type", "output")})
-            provider_state = (item.get("status") or {})
-            failed = bool(provider_state.get("status_str") == "error")
-            completed = bool(provider_state.get("completed")) or bool(outputs)
-            state = "failed" if failed else ("completed" if completed else "processing")
-            refreshed = {**output, "providerStatus": state, "outputs": outputs}
-            message = ("Image generation failed in ComfyUI." if failed else
-                       ("Image generated. Import it into project assets." if completed else
-                        "Image generation is running in ComfyUI."))
-            with connect() as c:
-                c.execute("UPDATE jobs SET status=?,progress=?,message=?,output_json=?,error=?,updated_at=? WHERE job_id=?",
-                          (state, 100 if completed else (0 if failed else 60), message,
-                           json.dumps(refreshed, ensure_ascii=False), message if failed else None, now(), job_id))
-                fresh = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-            return job_dict(fresh)
-        except Exception as e:
-            raise HTTPException(status_code=503, detail=f"ComfyUI status check failed: {str(e)[:240]}")
-    env_name = {"video":"MYTUBE_VIDEO_API_URL", "voice":"MYTUBE_TTS_API_URL",
-                "music":"MYTUBE_MUSIC_API_URL"}.get(kind)
-    if not env_name:
-        return current
-    provider_result = (current.get("output") or {}).get("result") or {}
-    provider_id = provider_result.get("jobId") or provider_result.get("job_id") or provider_result.get("id")
-    if not provider_id:
-        return current
-    try:
-        from backend.media_engines import configured_provider_poll
-        polled = configured_provider_poll(env_name, kind.title(), provider_id)
-        state = polled["status"]
-        progress = 100 if state == "completed" else (0 if state == "queued" else 75)
-        message = {"queued":"Provider job is queued.", "processing":"Provider job is running.",
-                   "completed":"Provider job completed.", "failed":"Provider job failed."}[state]
-        refreshed_output = {**(current.get("output") or {}),
-                            "providerStatus": state, "providerResult": polled.get("result", {})}
-        with connect() as c:
-            c.execute("UPDATE jobs SET status=?,progress=?,message=?,output_json=?,error=?,updated_at=? WHERE job_id=?",
-                      (state, progress, message, json.dumps(refreshed_output, ensure_ascii=False),
-                       str(polled["result"].get("error", "")) if state == "failed" else None, now(), job_id))
-            fresh = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-        return job_dict(fresh)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Provider status check failed: {str(e)[:240]}")
-
-
-@app.post("/api/jobs/{job_id}/import-output")
-def import_provider_output(job_id: str, authorization: str | None = Header(default=None)):
-    """Import a completed provider media file into MyTube's managed asset store."""
-    check_auth(authorization)
-    with connect() as c:
-        row = c.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Job not found")
-    current = job_dict(row)
-    if current["status"] != "completed":
-        raise HTTPException(status_code=409, detail="Provider job is not completed")
-    if (current.get("output") or {}).get("assetId"):
-        return {"assetId": current["output"]["assetId"], "status": "imported"}
-    kind = current["kind"]
-    if kind == "image":
-        output = current.get("output") or {}
-        outputs = output.get("outputs") or []
-        if not outputs:
-            raise HTTPException(status_code=409, detail="ComfyUI image output is not available yet; refresh the job first")
-        image_item = outputs[0]
-        try:
-            from backend.media_engines import comfyui_fetch_image
-            data, content_type = comfyui_fetch_image(image_item.get("filename", ""),
-                image_item.get("subfolder", ""), image_item.get("type", "output"))
-            ext = {"image/png":".png", "image/jpeg":".jpg", "image/webp":".webp"}.get(content_type)
-            if not ext:
-                raise RuntimeError("Unsupported generated image format")
-            name = uuid.uuid4().hex + ext
-            with open(os.path.join(ASSET_DIR, name), "wb") as out:
-                out.write(data)
-            saved = {**output, "assetId": name, "assetContentType": content_type, "assetSize": len(data)}
-            update_job(job_id, output_json=json.dumps(saved, ensure_ascii=False), message="Generated image imported into project assets.")
-            return {"assetId": name, "contentType": content_type, "size": len(data), "status": "imported"}
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Could not import generated image: {str(e)[:240]}")
-    env_name = {"video":"MYTUBE_VIDEO_API_URL", "voice":"MYTUBE_TTS_API_URL", "music":"MYTUBE_MUSIC_API_URL"}.get(kind)
-    if not env_name:
-        raise HTTPException(status_code=400, detail="This job kind does not use a downloadable media provider")
-    result = (current.get("output") or {}).get("result") or {}
-    provider_id = result.get("jobId") or result.get("job_id") or result.get("id")
-    if not provider_id:
-        raise HTTPException(status_code=502, detail="Provider job ID is missing; cannot retrieve its output")
-    try:
-        from backend.media_engines import configured_provider_fetch_output
-        data, content_type, ext = configured_provider_fetch_output(env_name, kind.title(), provider_id)
-        name = uuid.uuid4().hex + ext
-        with open(os.path.join(ASSET_DIR, name), "wb") as out:
-            out.write(data)
-        output = {**(current.get("output") or {}), "assetId": name, "assetContentType": content_type, "assetSize": len(data)}
-        update_job(job_id, output_json=json.dumps(output, ensure_ascii=False), message="Provider media imported into project assets.")
-        return {"assetId": name, "contentType": content_type, "size": len(data), "status": "imported"}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not import provider output: {str(e)[:240]}")
-
 
 @app.get("/api/jobs")
 def list_jobs(projectId: str | None = None, authorization: str | None = Header(default=None)):
@@ -609,289 +203,13 @@ def list_jobs(projectId: str | None = None, authorization: str | None = Header(d
             rows=c.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100").fetchall()
     return [job_dict(r) for r in rows]
 
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pathlib import Path
 
-class SubtitleCue(BaseModel):
-    start: float = Field(ge=0)
-    end: float = Field(gt=0)
-    text: str = Field(min_length=1, max_length=2000)
+@app.get("/studio")
+def studio():
+    return FileResponse("index.html")
 
-class SubtitleIn(BaseModel):
-    cues: list[SubtitleCue] = Field(min_length=1, max_length=2000)
-    format: str = Field(default="srt", pattern="^(srt|vtt)$")
-
-@app.post("/api/subtitles")
-def create_subtitles(body: SubtitleIn, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    def stamp(seconds, comma=True):
-        ms = max(0, int(round(seconds * 1000)))
-        h, rem = divmod(ms, 3600000); m, rem = divmod(rem, 60000); sec, milli = divmod(rem, 1000)
-        sep = "," if comma else "."
-        return f"{h:02d}:{m:02d}:{sec:02d}{sep}{milli:03d}"
-    rows = []
-    if body.format == "vtt": rows.append("WEBVTT\n")
-    for i, cue in enumerate(body.cues, 1):
-        if cue.end <= cue.start: raise HTTPException(status_code=422, detail=f"Cue {i} end must be after start.")
-        rows.extend(([str(i)] if body.format == "srt" else []) +
-                    [f"{stamp(cue.start, body.format == 'srt')} --> {stamp(cue.end, body.format == 'srt')}", cue.text.strip(), ""])
-    return {"format": body.format, "content": "\n".join(rows), "cueCount": len(body.cues)}
-
-
-class RenderIn(BaseModel):
-    projectId: str = Field(min_length=1, max_length=120)
-    clips: list[str] = Field(min_length=1, max_length=500)
-    audioTracks: list[str] = Field(default_factory=list, max_length=8)
-    resolution: str = Field(default="1080p", pattern="^(720p|1080p|4K)$")
-    fps: int = Field(default=30, ge=24, le=60)
-    preset: str = Field(default="Balanced", pattern="^(High Quality|Balanced|Smaller File)$")
-    watermark: str = Field(default="", max_length=100)
-    watermarkPosition: str = Field(default="Bottom right", pattern="^(Bottom right|Bottom left|Top right|Top left|Center)$")
-    aspectRatio: str = Field(default="16:9", pattern="^(16:9|9:16)$")
-
-
-def safe_asset(name: str) -> str:
-    # API accepts only filenames returned by /api/assets, never arbitrary paths.
-    if not name or os.path.basename(name) != name or name.startswith("."):
-        raise HTTPException(status_code=400, detail="Invalid asset name")
-    path=os.path.realpath(os.path.join(ASSET_DIR,name))
-    if os.path.commonpath([path,os.path.realpath(ASSET_DIR)]) != os.path.realpath(ASSET_DIR) or not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail="Asset not found")
-    return path
-
-
-@app.post("/api/assets", status_code=201)
-async def upload_asset(projectId: str = Form(...), file: UploadFile = File(...), authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    if len(projectId) > 120 or not projectId.strip(): raise HTTPException(status_code=400, detail="Invalid project ID")
-    original=os.path.basename(file.filename or "upload.bin")
-    ext=os.path.splitext(original)[1].lower()
-    allowed={".mp4", ".mov", ".mkv", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".png", ".jpg", ".jpeg", ".webp", ".srt", ".vtt"}
-    if ext not in allowed: raise HTTPException(status_code=415, detail="Unsupported media type")
-    name=f"{uuid.uuid4().hex}{ext}"; dest=os.path.join(ASSET_DIR,name); total=0
-    try:
-        with open(dest,"wb") as out:
-            while chunk:=await file.read(1024*1024):
-                total+=len(chunk)
-                if total > MAX_UPLOAD_MB*1024*1024: raise HTTPException(status_code=413, detail=f"Upload exceeds {MAX_UPLOAD_MB} MB")
-                out.write(chunk)
-    except Exception:
-        if os.path.exists(dest): os.remove(dest)
-        raise
-    return {"assetId":name,"filename":original,"size":total,"projectId":projectId}
-
-
-@app.get("/api/assets/{name}")
-def download_asset(name: str, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    return FileResponse(safe_asset(name), filename=name)
-
-
-@app.post("/api/render", status_code=202)
-def render_video(body: RenderIn, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    if not shutil.which("ffmpeg"): raise HTTPException(status_code=503, detail="FFmpeg is not installed on this host")
-    clips=[safe_asset(x) for x in body.clips]
-    audios=[safe_asset(x) for x in body.audioTracks]
-    render_id=uuid.uuid4().hex
-    output=os.path.join(EXPORT_DIR, f"{render_id}.mp4")
-    JOB_EXECUTOR.submit(_render_worker, clips, audios, body, output)
-    return {"renderId":render_id,"status":"processing","message":"Render started"}
-
-
-def _render_worker(clips, audios, body, output):
-    # Normalize and concatenate clips; mix all selected audio tracks.
-    work=tempfile.mkdtemp(prefix="mytube-render-")
-    try:
-        dimensions = {"720p":(1280,720),"1080p":(1920,1080),"4K":(3840,2160)} if body.aspectRatio == "16:9" else {"720p":(720,1280),"1080p":(1080,1920),"4K":(2160,3840)}
-        w,h=dimensions[body.resolution]
-        normalized=[]
-        for i,clip in enumerate(clips):
-            target=os.path.join(work,f"clip-{i:04d}.mp4")
-            vf = (f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2" if body.aspectRatio == "16:9" else f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}") + f",setsar=1,fps={body.fps}"
-            cmd=["ffmpeg","-y","-i",clip,"-vf",vf,"-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p","-an",target]
-            subprocess.run(cmd,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=7200)
-            normalized.append(target)
-        concat=os.path.join(work,"concat.txt")
-        with open(concat,"w") as f:
-            for item in normalized: f.write("file '"+item.replace("'","'\''")+"'\n")
-        merged=os.path.join(work,"merged.mp4")
-        subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i",concat,"-c","copy",merged],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=7200)
-        cmd=["ffmpeg","-y","-i",merged]
-        for audio in audios:
-            cmd += ["-i",audio]
-        if body.watermark:
-            # Escape drawtext metacharacters; never interpret user text as a filter expression.
-            txt=body.watermark.replace("\\","\\\\").replace(":","\\:").replace("'","\\'").replace("%","\\%")
-            positions = {"Bottom right": ("w-tw-24", "h-th-24"), "Bottom left": ("24", "h-th-24"), "Top right": ("w-tw-24", "24"), "Top left": ("24", "24"), "Center": ("(w-tw)/2", "(h-th)/2")}
-            wx, wy = positions[body.watermarkPosition]
-            cmd += ["-vf",f"drawtext=text='{txt}':x={wx}:y={wy}:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.45"]
-        cmd += ["-c:v","libx264","-preset","medium" if body.preset=="High Quality" else "veryfast","-crf","18" if body.preset=="High Quality" else "23" if body.preset=="Balanced" else "28"]
-        if audios:
-            audio_inputs="".join(f"[{i+1}:a:0]" for i in range(len(audios)))
-            filter_complex=audio_inputs+f"amix=inputs={len(audios)}:duration=longest:dropout_transition=2[aout]"
-            cmd += ["-filter_complex",filter_complex,"-map","0:v:0","-map","[aout]","-c:a","aac","-b:a","192k"]
-        else:
-            cmd += ["-an"]
-        cmd += ["-movflags","+faststart",output]
-        subprocess.run(cmd,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=7200)
-    except Exception as exc:
-        with open(output+".error","w") as f: f.write(str(exc)[:2000])
-    finally:
-        shutil.rmtree(work,ignore_errors=True)
-
-
-@app.get("/api/render/{render_id}")
-def render_status(render_id: str, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    if not render_id.isalnum(): raise HTTPException(status_code=400,detail="Invalid render ID")
-    path=os.path.join(EXPORT_DIR,render_id+".mp4")
-    err=path+".error"
-    if os.path.isfile(path): return {"renderId":render_id,"status":"completed","downloadUrl":f"/api/render/{render_id}/download"}
-    if os.path.isfile(err):
-        with open(err, encoding="utf-8", errors="replace") as f:
-            return {"renderId":render_id,"status":"failed","error":f.read(2000)}
-    return {"renderId":render_id,"status":"processing"}
-
-
-@app.get("/api/render/{render_id}/download")
-def render_download(render_id: str, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    if not render_id.isalnum(): raise HTTPException(status_code=400,detail="Invalid render ID")
-    path=os.path.join(EXPORT_DIR,render_id+".mp4")
-    if not os.path.isfile(path): raise HTTPException(status_code=404,detail="Render is not ready")
-    return FileResponse(path,media_type="video/mp4",filename="mytube-export.mp4")
-
-
-class ShortRenderIn(BaseModel):
-    projectId: str = Field(min_length=1, max_length=120)
-    assetId: str = Field(min_length=1, max_length=180)
-    startSeconds: float = Field(default=0, ge=0)
-    endSeconds: float = Field(gt=0)
-    resolution: str = Field(default="1080p", pattern="^(720p|1080p)$")
-    watermark: str = Field(default="", max_length=100)
-
-
-@app.post("/api/shorts/render", status_code=202)
-def render_short(body: ShortRenderIn, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    if not shutil.which("ffmpeg"):
-        raise HTTPException(status_code=503, detail="FFmpeg is not installed on this host")
-    if body.endSeconds <= body.startSeconds:
-        raise HTTPException(status_code=422, detail="End time must be greater than start time")
-    source = safe_asset(body.assetId)
-    render_id = uuid.uuid4().hex
-    output = os.path.join(EXPORT_DIR, render_id + ".mp4")
-    JOB_EXECUTOR.submit(_short_render_worker, source, body, output)
-    return {"renderId": render_id, "status": "processing", "format": "9:16"}
-
-
-def _short_render_worker(source, body, output):
-    # Publish only after FFmpeg has produced a complete file.
-    partial_output = output + ".partial.mp4"
-    try:
-        w, h = (720, 1280) if body.resolution == "720p" else (1080, 1920)
-        duration = body.endSeconds - body.startSeconds
-        vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1"
-        if body.watermark:
-            txt = body.watermark.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
-            vf += f",drawtext=text='{txt}':x=w-tw-24:y=h-th-24:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.45"
-        cmd = ["ffmpeg", "-y", "-ss", str(body.startSeconds), "-i", source,
-               "-t", str(duration), "-vf", vf, "-c:v", "libx264", "-preset", "veryfast",
-               "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
-               "-movflags", "+faststart", partial_output]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=7200)
-        if not os.path.isfile(partial_output) or os.path.getsize(partial_output) == 0:
-            raise RuntimeError("FFmpeg completed without producing a usable Short.")
-        os.replace(partial_output, output)
-        try: os.remove(output + ".error")
-        except FileNotFoundError: pass
-    except Exception as exc:
-        try: os.remove(partial_output)
-        except FileNotFoundError: pass
-        with open(output + ".error", "w", encoding="utf-8") as f:
-            f.write(str(exc)[:1000])
-
-
-class ImageIn(BaseModel):
-    prompt: str = Field(min_length=1, max_length=4000)
-    workflow: dict[str, Any] = Field(default_factory=dict)
-
-class ProviderIn(BaseModel):
-    prompt: str = Field(min_length=1, max_length=8000)
-    projectId: str = Field(min_length=1, max_length=120)
-    options: dict[str, Any] = Field(default_factory=dict)
-
-@app.post("/api/engines/image")
-def generate_image(body: ImageIn, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    from backend.media_engines import comfyui_submit
-    try: return comfyui_submit(body.prompt, body.workflow)
-    except Exception as e: raise HTTPException(status_code=503, detail=str(e))
-
-@app.get("/api/engines/image/{prompt_id}")
-def image_job_status(prompt_id: str, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    from backend.media_engines import comfyui_history
-    try:
-        history = comfyui_history(prompt_id)
-        item = history.get(prompt_id)
-        if not item:
-            return {"promptId":prompt_id,"status":"processing","outputs":[]}
-        outputs=[]
-        for node_id, node in (item.get("outputs") or {}).items():
-            for image_item in node.get("images",[]):
-                outputs.append({"nodeId":node_id,"filename":image_item.get("filename"),
-                    "subfolder":image_item.get("subfolder",""),"type":image_item.get("type","output")})
-        status = item.get("status",{})
-        completed = bool(status.get("completed")) or bool(outputs)
-        return {"promptId":prompt_id,"status":"completed" if completed else "processing",
-                "outputs":outputs,"messages":status.get("messages",[])}
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-@app.get("/api/engines/image/{prompt_id}/output/{index}")
-def image_job_output(prompt_id: str, index: int, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    from backend.media_engines import comfyui_history, comfyui_fetch_image
-    from fastapi.responses import Response
-    try:
-        history = comfyui_history(prompt_id)
-        item = history.get(prompt_id)
-        if not item: raise HTTPException(status_code=404, detail="Image job is not complete.")
-        outputs=[]
-        for node_id, node in (item.get("outputs") or {}).items():
-            for image_item in node.get("images",[]):
-                outputs.append(image_item)
-        if index < 0 or index >= len(outputs): raise HTTPException(status_code=404, detail="Image output not found.")
-        image_item=outputs[index]
-        content, content_type = comfyui_fetch_image(image_item.get("filename",""),
-            image_item.get("subfolder",""), image_item.get("type","output"))
-        return Response(content=content, media_type=content_type,
-            headers={"Content-Disposition":'inline; filename="mytube-generated-image"'})
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-@app.post("/api/engines/video")
-def generate_video(body: ProviderIn, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    from backend.media_engines import configured_provider_submit
-    try: return configured_provider_submit("MYTUBE_VIDEO_API_URL","Video",body.model_dump())
-    except Exception as e: raise HTTPException(status_code=503, detail=str(e))
-
-@app.post("/api/engines/voice")
-def generate_voice(body: ProviderIn, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    from backend.media_engines import configured_provider_submit
-    try: return configured_provider_submit("MYTUBE_TTS_API_URL","Speech",body.model_dump())
-    except Exception as e: raise HTTPException(status_code=503, detail=str(e))
-
-@app.post("/api/engines/music")
-def generate_music(body: ProviderIn, authorization: str | None = Header(default=None)):
-    check_auth(authorization)
-    from backend.media_engines import configured_provider_submit
-    try: return configured_provider_submit("MYTUBE_MUSIC_API_URL","Music",body.model_dump())
-    except Exception as e: raise HTTPException(status_code=503, detail=str(e))
-
-# Serve CSS, JS, icons and manifest after explicit API routes.
-app.mount("/", StaticFiles(directory=STUDIO_DIR, html=True), name="studio")
+from fastapi.staticfiles import StaticFiles
+app.mount("/", StaticFiles(directory=".", html=True), name="studio")

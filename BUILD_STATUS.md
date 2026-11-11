@@ -1,61 +1,22 @@
-# Build status — Release 2.15
+# MyTube AI consolidated build v0.4
 
-## Implemented in this codebase
-- Local Ollama text/production jobs and persisted job tracking.
-- Configurable provider submission, polling, retry and output-import contracts for video, voice and music.
-- ComfyUI image submission/status/output routes with caller-supplied API workflows.
-- Scene image generation now uses durable backend jobs; scene job IDs/status persist in project state and can be refreshed after reload. Completed image outputs import into managed project assets.
-- Subtitle cue formatting endpoint (SRT/VTT) and production-pack subtitle text drafts.
-- FFmpeg full-video rendering in 16:9/9:16, watermark placement and multi-track audio mixing.
-- Individual Shorts trimming/rendering to 9:16, watermark, status refresh and download links.
-- Local project backup and restore.
-- Backend restart recovery for interrupted local jobs.
-- Engine diagnostics distinguish configured endpoints from reachable services.
+## Implemented in this package
+- Same-origin FastAPI + static studio; frontend uses the current origin automatically.
+- Local Ollama text/script job queue with SQLite job records.
+- Persistent server-side media asset uploads with file-type and size validation.
+- FFmpeg MP4 renderer API: normalizes and concatenates uploaded clips, optionally muxes an audio track, applies a text watermark, and exports 720p/1080p/4K MP4 presets.
+- Render status and download endpoints.
+- Capability reporting distinguishes installed/available engines from merely configured endpoint placeholders.
+- Browser-side project storage and backup/restore remain in place.
 
-## Release 2.8 changes
-- Replaced browser-only ComfyUI scene image submission with persistent backend image jobs.
-- Added per-scene refresh and automatic asset import after successful completion.
-- Updated service-worker cache and backend version to 2.8.0.
+## Not implemented / not falsely claimed
+- No image, video-generation, voice-generation, or music-generation model is bundled or connected. The optional endpoint variables are placeholders, not functioning adapters.
+- No automatic bilingual speech translation or voice cloning is bundled.
+- The renderer combines media the user has already generated; it does not create cinematic footage.
+- The browser UI does not yet provide a complete end-user upload-and-render workflow; the renderer is available through the backend API.
+- Codespaces can stop/sleep and are not always-on hosting.
 
-## Verified in this build environment
-- Python syntax compilation.
-- JavaScript syntax check.
-- Persistent image-job lifecycle test using mocked ComfyUI responses.
-- ZIP integrity.
-
-## Not verified / requires external setup
-- Live deployment and connection to the user's Codespace.
-- Actual ComfyUI model/workflow execution.
-- Actual external video/TTS/music provider execution.
-- Full production run with real project media.
-
-Adapters are integration points, not bundled generation models. A configured endpoint or passing mock test does not establish that a real media generator is operational.
-
-
-## Release 2.9 update
-- Bounded background worker pool (default 3, configurable 1–8).
-- Real media models/providers remain external configuration requirements.
-\n## Release 2.10\n- Queued media jobs recover as retryable failures after restart.\n- Processing media jobs without remote IDs recover as retryable failures.\n- Invalid worker-pool configuration safely falls back to three workers.\n\n## Release 2.11\n- Individual Shorts are atomically published only after a successful, non-empty FFmpeg output.\n- Actual sample Short render tested at 720x1280 with audio and watermark.\n
-## Release 2.12
-- Added completed provider-media import during saved-job refresh.
-- Imported media asset IDs are attached to matching production-pack scenes and persisted.
-- Validation: Python compile, JavaScript syntax, backend import/route count, ZIP integrity. Provider behavior remains dependent on an externally configured compatible service.
-
-
-## Release 2.13
-- Added full ZIP backup of browser project data, backend SQLite jobs, assets and rendered exports.
-- Added a phone-friendly Full backup + media control while preserving the existing JSON project backup.
-- Python/JavaScript syntax, backend import, endpoint smoke test and ZIP contents/integrity verified.
-
-
-## Release 2.14
-- Added validated full ZIP restore for projects plus missing media assets/exports.
-- Preserves existing files and active jobs database.
-- See RELEASE_NOTES_2.14.md.
-
-
-## Release 2.15
-- Saved Codespace backend URL and optional bearer-token support added to AI Engine.
-- GitHub Pages avoids incorrectly assuming its own origin is the API backend.
-- Authenticated `/api/session` capability probe added.
-- Protected image previews and download links now use authenticated fetches rather than unauthenticated direct file links.
+## Requirements
+- Python packages in requirements.txt.
+- Ollama + qwen2.5:3b for local text generation.
+- FFmpeg installed on the host for actual MP4 rendering.
