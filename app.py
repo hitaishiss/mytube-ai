@@ -27,7 +27,7 @@ ALLOWED_ORIGINS = [x.strip() for x in os.getenv(
 APP_TOKEN = os.getenv("MYTUBE_API_TOKEN", "")
 
 STUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app = FastAPI(title="MyTube AI private backend", version="2.12.0")
+app = FastAPI(title="MyTube AI private backend", version="2.14.0")
 # Bound background work to protect small Codespaces from large scene batches.
 try:
     MAX_WORKERS = max(1, min(8, int(os.getenv("MYTUBE_MAX_WORKERS", "3"))))
@@ -163,6 +163,91 @@ def create_full_backup(payload: dict[str, Any] = Body(...), authorization: str |
     finally:
         try:
             if os.path.exists(snapshot_path): os.remove(snapshot_path)
+        except OSError:
+            pass
+
+
+@app.post("/api/backup/restore")
+async def restore_full_backup(file: UploadFile = File(...), authorization: str | None = Header(default=None)):
+    """Safely restore browser projects and add missing media files from a MyTube AI full backup."""
+    check_auth(authorization)
+    if not (file.filename or "").lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Choose a MyTube AI .zip backup")
+    temp_path = os.path.join(EXPORT_DIR, f"restore-{uuid.uuid4().hex}.zip")
+    restored = {"assets": 0, "exports": 0}
+    try:
+        total = 0
+        with open(temp_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 2 * 1024 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Backup exceeds the 2 GB restore limit")
+                out.write(chunk)
+        with zipfile.ZipFile(temp_path, "r") as archive:
+            infos = archive.infolist()
+            if len(infos) > 20000:
+                raise HTTPException(status_code=400, detail="Backup contains too many files")
+            names = set()
+            expanded = 0
+            for info in infos:
+                name = info.filename.replace("\\\\", "/")
+                parts = name.split("/")
+                if name.startswith("/") or any(p in ("", ".", "..") for p in parts if p != ""):
+                    raise HTTPException(status_code=400, detail="Backup contains an unsafe file path")
+                if name in names:
+                    raise HTTPException(status_code=400, detail="Backup contains duplicate paths")
+                names.add(name)
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    raise HTTPException(status_code=400, detail="Backup contains a symbolic link")
+                expanded += info.file_size
+                if expanded > 4 * 1024 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Expanded backup exceeds the 4 GB restore limit")
+            try:
+                manifest = json.loads(archive.read("manifest.json"))
+                projects = json.loads(archive.read("projects.json"))
+            except Exception:
+                raise HTTPException(status_code=400, detail="This is not a valid MyTube AI full backup")
+            if manifest.get("app") != "MyTube AI" or manifest.get("formatVersion") != 1 or not isinstance(projects, list):
+                raise HTTPException(status_code=400, detail="Unsupported MyTube AI backup format")
+            for info in infos:
+                name = info.filename.replace("\\\\", "/")
+                if info.is_dir():
+                    continue
+                if name.startswith("backend/assets/"):
+                    target_root, counter = ASSET_DIR, "assets"
+                    rel = name[len("backend/assets/"):]
+                elif name.startswith("backend/exports/"):
+                    target_root, counter = EXPORT_DIR, "exports"
+                    rel = name[len("backend/exports/"):]
+                else:
+                    continue
+                if not rel or rel.startswith("/") or any(x in ("", ".", "..") for x in rel.split("/")):
+                    raise HTTPException(status_code=400, detail="Backup contains an unsafe media path")
+                target = os.path.abspath(os.path.join(target_root, rel))
+                if os.path.commonpath([os.path.abspath(target_root), target]) != os.path.abspath(target_root):
+                    raise HTTPException(status_code=400, detail="Backup media path escapes its destination")
+                if os.path.exists(target):
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with archive.open(info) as src, open(target, "xb") as dst:
+                    shutil.copyfileobj(src, dst, length=1024 * 1024)
+                restored[counter] += 1
+        return {"ok": True, "projects": projects, "restored": restored,
+                "note": "Projects restored. Existing media files and the current jobs database were preserved."}
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Backup ZIP is damaged or invalid")
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
         except OSError:
             pass
 
