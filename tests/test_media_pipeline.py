@@ -45,7 +45,7 @@ class MediaPipelineTests(unittest.TestCase):
         result = app._replace_workflow_values(source, {"prompt": "A quiet scene", "image": "scene.png", "frames": 49})
         self.assertEqual(result["1"]["inputs"]["text"], "A quiet scene")
         self.assertEqual(result["1"]["inputs"]["image"], "scene.png")
-        self.assertEqual(result["1"]["inputs"]["frames"], "49")
+        self.assertEqual(result["1"]["inputs"]["frames"], 49)
 
     def test_comfyui_workflow_preserves_numeric_placeholder_types(self):
         source = {"1": {"inputs": {"width": "{{width}}", "prompt": "Scene {{prompt}}"}}}
