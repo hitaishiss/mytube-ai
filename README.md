@@ -6,7 +6,7 @@ MyTube AI is a browser-based drama production studio with a FastAPI backend and 
 
 The backend currently supports health and capability reporting, local text/script generation through Ollama, local speech preview through eSpeak NG / eSpeak, and SQLite job status persistence.
 
-AI image generation, AI video generation, music generation, and final video rendering/export are not implemented as production generation adapters yet. UI planning/settings for these features do not mean the corresponding media pipeline is operational.
+The backend also has a Stable Diffusion-compatible image adapter, procedural instrumental music, FFmpeg still-image video assembly, and MP4 audio/video muxing. These adapters are not equivalent to full AI video or AI music composition; see the media limitations below.
 
 ## Run with Docker Compose
 
@@ -19,7 +19,7 @@ Requirements: Docker Engine with the Compose plugin, plus enough memory and disk
 
 3. Open http://localhost:8000.
 
-To stop the stack, press Ctrl+C and run docker compose down. Persistent Ollama model, job database, and generated audio data are stored in Docker volumes.
+To stop the stack, press Ctrl+C and run docker compose down. Persistent Ollama model, job database, generated audio, and generated media assets are stored in Docker volumes.
 
 The compose stack is intended for local testing or a host you control. It is not a free always-on public hosting service. Do not expose port 8000 publicly without suitable authentication, HTTPS, rate limits, and monitoring.
 
@@ -56,11 +56,20 @@ GitHub Actions checks Python compilation/import, JavaScript syntax, Docker Compo
 
 The Media Lab tab connects to backend jobs for four production steps:
 
-- **Images:** calls an AUTOMATIC1111-compatible Stable Diffusion WebUI API at `MYTUBE_IMAGE_API_URL` (default `http://127.0.0.1:7860`). Start that image service on the same backend host and enable its API before using image generation. The Docker Compose stack does not download or start a Stable Diffusion model automatically; image models require substantial storage and compatible compute.
+- **Images:** calls an AUTOMATIC1111-compatible Stable Diffusion WebUI API at `MYTUBE_IMAGE_API_URL` (default `http://127.0.0.1:7860`). Start that image service on the same backend host and enable its API before using image generation. Docker Compose points to a host-side API at `http://host.docker.internal:7860` by default; set `MYTUBE_IMAGE_API_URL` to override it. The stack does not download or start Stable Diffusion automatically; image models require substantial storage and compatible compute.
 - **Video:** FFmpeg assembles selected generated still images into a simple 720p H.264 MP4 sequence. This is a slideshow-style motion pipeline, not text-to-video or character animation.
 - **Music:** the backend synthesizes original mood-based instrumental audio as a WAV file. It is procedural background music, not a full AI song/vocal generator.
 - **Final export:** FFmpeg muxes the assembled video and optional generated music into a single MP4 with AAC audio.
 
 Generated files are stored in the backend asset directory and served from `/assets/`. The project browser stores generated asset filenames/URLs locally; back up your project data and keep the backend's generated_assets directory persistent.
 
-Set `MYTUBE_IMAGE_API_URL` to the reachable Stable Diffusion API URL when it is not running on localhost. These media endpoints are intended for a trusted, private backend. Before exposing them publicly, add authentication to all job/media routes, request limits, storage quotas, and HTTPS. The existing static browser client does not yet have a secure private-token configuration flow.
+Set `MYTUBE_IMAGE_API_URL` to the reachable Stable Diffusion API URL if it uses a different address. These media endpoints are intended for a trusted, private backend. Before exposing them publicly, add authentication to all job/media routes, request limits, storage quotas, and HTTPS. The existing static browser client does not yet have a secure private-token configuration flow.
+
+
+### Important free-first limitations
+
+- A compatible image model service must be installed and running on hardware you control. The project does not bundle multi-gigabyte model weights.
+- The current video adapter is a still-image sequence assembler, not an AI video diffusion model. Real prompt-to-video or image-to-video generation requires a separate model runtime and substantial GPU memory.
+- The current music adapter is a procedural synthesizer, not MusicGen or another neural music model. Full AI music generation likewise requires model weights and compute.
+- FFmpeg final export is implemented as a muxing step; it does not generate animated scenes. The complete cinematic workflow is therefore not yet available end-to-end.
+- Free-first means open-source/local software without per-generation API charges. It does not remove hardware, electricity, storage, or hosting requirements.
