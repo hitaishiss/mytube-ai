@@ -78,8 +78,8 @@ def ollama_generate(prompt: str, system: str = "", progress_callback=None):
         "stream": True,
         "keep_alive": "10m",
         "options": {
-            "num_predict": 900,
-            "num_ctx": 4096,
+            "num_predict": 3000,
+            "num_ctx": 8192,
             "temperature": 0.7
         }
     }
@@ -386,11 +386,56 @@ def run_job(job_id, kind, inp):
         if kind == "text":
             prompt = str(inp.get("prompt") or inp.get("idea") or "").strip()
             if not prompt: raise RuntimeError("Add a prompt or story idea before generating.")
-            system = str(inp.get("system") or "You are MyTube AI's original drama-writing assistant. Write compelling scenes with clear character motivations and natural dialogue.")
+            system = str(inp.get("system") or (
+                "You are MyTube AI's professional drama showrunner and screenplay writer. "
+                "Write original, production-ready drama scripts with clear motivations, natural dialogue, "
+                "and strict continuity. Never silently change an established character's identity."
+            ))
+            characters = inp.get("characters") or []
+            character_lock = []
+            for character in characters[:30]:
+                if not isinstance(character, dict):
+                    continue
+                name = str(character.get("name") or "").strip()
+                description = str(character.get("description") or "").strip()
+                role = str(character.get("role") or "").strip()
+                kind = str(character.get("type") or "Human").strip()
+                if name:
+                    character_lock.append(f"- {name} ({kind}; {role}): {description or 'Keep established traits unchanged.'}")
+            duration = str(inp.get("duration") or "10 minutes")
+            format_name = str(inp.get("format") or "Vertical (9:16)")
+            bible = str(inp.get("storyBible") or "").strip()
+            full_prompt = f"""
+PROJECT: {str(inp.get('title') or 'Untitled Drama')}
+PREMISE: {str(inp.get('idea') or prompt)}
+CREATIVE DIRECTION: {prompt}
+TARGET LENGTH: {duration}
+VIDEO FORMAT: {format_name}
+EXISTING STORY BIBLE (canon):
+{bible or 'No established canon yet. Create a concise, coherent story bible.'}
+EXISTING CAST — LOCKED CANON:
+{chr(10).join(character_lock) if character_lock else 'No cast defined. Create a cast with distinctive repeatable visual descriptions.'}
+
+WRITE A COMPLETE ORIGINAL DRAMA SCREENPLAY, NOT A SYNOPSIS.
+Required sections:
+1. TITLE, GENRE, LOGLINE and TARGET RUNTIME.
+2. STORY BIBLE: setting, time period, tone, central conflict and continuity facts.
+3. CHARACTER BIBLE: name, role, personality, motivation, relationships, voice notes and a VISUAL IDENTITY LOCK for every featured character. Specify stable face, hair, skin tone, build, distinguishing features, clothing palette and accessories.
+4. COMPLETE SCENE-BY-SCENE SCREENPLAY: numbered scene headings, location/time, visual action, character actions and natural dialogue. Every scene must have a dramatic purpose. Never replace scenes with summaries or placeholders.
+5. CONTINUITY CHECKLIST: fixed appearance, wardrobe, relationships, props and timeline facts.
+
+LENGTH RULES:
+- For 5 minutes: 3–5 substantial scenes; 10 minutes: 6–8; 20 minutes: 10–14; 30 minutes: 14–18.
+- Write actual playable action and dialogue, not a short outline.
+- Preserve supplied cast identities. If details are missing, define them once in the character bible and keep them unchanged.
+- Use exact character names and consistent spellings throughout.
+- Finish with a meaningful resolution or deliberate episode cliffhanger, following the creative direction.
+"""
             def report_progress(text):
-                update_job(job_id, progress=min(94,40+len(text)//180), message=f"Writing script… {len(text)} characters received")
-            result = ollama_generate(prompt, system, report_progress)
-            output = {"text": result}
+                update_job(job_id, progress=min(94,40+len(text)//220), message=f"Writing complete drama… {len(text)} characters received")
+            result = ollama_generate(full_prompt, system, report_progress)
+            output = {"text": result, "engine": "Ollama / " + TEXT_MODEL,
+                      "characterCount": len(character_lock), "requestedDuration": duration}
         elif kind == "image":
             update_job(job_id, progress=25, message="Sending prompt to local image model…")
             output = generate_image(inp)
