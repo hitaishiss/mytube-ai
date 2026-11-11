@@ -47,6 +47,25 @@ class MediaPipelineTests(unittest.TestCase):
         self.assertEqual(result["1"]["inputs"]["image"], "scene.png")
         self.assertEqual(result["1"]["inputs"]["frames"], "49")
 
+    def test_comfyui_workflow_preserves_numeric_placeholder_types(self):
+        source = {"1": {"inputs": {"width": "{{width}}", "prompt": "Scene {{prompt}}"}}}
+        result = app._replace_workflow_values(source, {"width": 768, "prompt": "A quiet scene"})
+        self.assertEqual(result["1"]["inputs"]["width"], 768)
+        self.assertIsInstance(result["1"]["inputs"]["width"], int)
+        self.assertEqual(result["1"]["inputs"]["prompt"], "Scene A quiet scene")
+
+    def test_comfyui_video_output_finder_ignores_non_video_files(self):
+        history = {"outputs": {
+            "1": {"images": [{"filename": "preview.png"}]},
+            "2": {"files": [{"filename": "frame.webp"}]},
+            "3": {"gifs": [{"filename": "final.mp4", "type": "output"}]}
+        }}
+        self.assertEqual(app._find_comfyui_video(history)["filename"], "final.mp4")
+
+    def test_comfyui_video_output_finder_returns_none_without_video(self):
+        history = {"outputs": {"1": {"images": [{"filename": "preview.png"}]}}}
+        self.assertIsNone(app._find_comfyui_video(history))
+
     def test_comfyui_video_requires_explicit_server_configuration(self):
         with patch.object(app, "COMFYUI_URL", ""):
             with self.assertRaisesRegex(RuntimeError, "MYTUBE_COMFYUI_URL"):
