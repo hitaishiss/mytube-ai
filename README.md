@@ -51,3 +51,16 @@ GitHub Pages can host static frontend files, but it cannot run this FastAPI/Olla
 ## Verification
 
 GitHub Actions checks Python compilation/import, JavaScript syntax, Docker Compose configuration, and Docker image build. These are build/syntax checks; they do not prove that Ollama, voice generation, or a deployed public service works end-to-end.
+
+## Media generation adapters
+
+The Media Lab tab connects to backend jobs for four production steps:
+
+- **Images:** calls an AUTOMATIC1111-compatible Stable Diffusion WebUI API at `MYTUBE_IMAGE_API_URL` (default `http://127.0.0.1:7860`). Start that image service on the same backend host and enable its API before using image generation. The Docker Compose stack does not download or start a Stable Diffusion model automatically; image models require substantial storage and compatible compute.
+- **Video:** FFmpeg assembles selected generated still images into a simple 720p H.264 MP4 sequence. This is a slideshow-style motion pipeline, not text-to-video or character animation.
+- **Music:** the backend synthesizes original mood-based instrumental audio as a WAV file. It is procedural background music, not a full AI song/vocal generator.
+- **Final export:** FFmpeg muxes the assembled video and optional generated music into a single MP4 with AAC audio.
+
+Generated files are stored in the backend asset directory and served from `/assets/`. The project browser stores generated asset filenames/URLs locally; back up your project data and keep the backend's generated_assets directory persistent.
+
+Set `MYTUBE_IMAGE_API_URL` to the reachable Stable Diffusion API URL when it is not running on localhost. These media endpoints are intended for a trusted, private backend. Before exposing them publicly, add authentication to all job/media routes, request limits, storage quotas, and HTTPS. The existing static browser client does not yet have a secure private-token configuration flow.
