@@ -138,9 +138,15 @@ def generate_image(inp):
     prompt = str(inp.get("prompt") or "").strip()
     if not prompt:
         raise RuntimeError("Add an image prompt.")
+    width = int(inp.get("width", 768))
+    height = int(inp.get("height", 512))
+    steps = int(inp.get("steps", 20))
+    if width not in (512, 640, 768, 896, 1024) or height not in (512, 640, 768, 896, 1024):
+        raise RuntimeError("Image width and height must be one of 512, 640, 768, 896, or 1024.")
+    if not 1 <= steps <= 40:
+        raise RuntimeError("Image steps must be between 1 and 40.")
     payload = {"prompt": prompt, "negative_prompt": str(inp.get("negativePrompt") or "blurry, low quality, distorted"),
-               "steps": int(inp.get("steps", 20)), "width": int(inp.get("width", 768)),
-               "height": int(inp.get("height", 512)), "cfg_scale": 7, "batch_size": 1}
+               "steps": steps, "width": width, "height": height, "cfg_scale": 7, "batch_size": 1}
     req = Request(IMAGE_API_URL.rstrip("/") + "/sdapi/v1/txt2img",
                   data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
     with urlopen(req, timeout=600) as response:
