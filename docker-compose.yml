@@ -35,6 +35,9 @@ services:
       MYTUBE_ALLOWED_ORIGINS: ${MYTUBE_ALLOWED_ORIGINS:-https://hitaishiss.github.io}
       MYTUBE_API_TOKEN: ${MYTUBE_API_TOKEN:-}
       MYTUBE_IMAGE_API_URL: ${MYTUBE_IMAGE_API_URL:-http://host.docker.internal:7860}
+      MYTUBE_COMFYUI_URL: ${MYTUBE_COMFYUI_URL:-}
+      MYTUBE_COMFYUI_WORKFLOW_FILE: ${MYTUBE_COMFYUI_WORKFLOW_FILE:-/app/comfyui_workflow_api.json}
+      MYTUBE_MUSIC_API_URL: ${MYTUBE_MUSIC_API_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
