@@ -71,6 +71,10 @@ class MediaPipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "MYTUBE_COMFYUI_URL"):
                 app.generate_comfyui_video({"prompt": "A scene"})
 
+    def test_generated_audio_path_is_confined_to_audio_directory(self):
+        path = app.safe_audio("preview.wav")
+        self.assertEqual(os.path.dirname(path), os.path.abspath("generated_audio"))
+
     def test_asset_path_stays_inside_asset_directory(self):
         path = app.safe_asset("../example.wav")
         self.assertEqual(os.path.dirname(path), os.path.abspath(self.temp_dir.name))
