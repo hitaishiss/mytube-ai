@@ -74,7 +74,7 @@ const voiceButton=$("generateVoice");
 if(voiceButton)voiceButton.onclick=async()=>{
   const status=$("voiceStatus"),text=$("voiceText").value.trim(),player=$("voicePlayer");
   if(!text){status.textContent="Enter dialogue first.";return}
-  const base=(window.MYTUBE_API_BASE||window.location.origin).trim().replace(/\\/$/,"");
+  const base=(window.MYTUBE_API_BASE||window.location.origin).trim().replace(/\/$/,"");
   const first=Object.values(p.voices||{})[0]||{};
   voiceButton.disabled=true;status.textContent="Generating local speech preview…";player.style.display="none";
   try{
