@@ -373,7 +373,6 @@ def studio():
     return FileResponse("index.html")
 
 from fastapi.staticfiles import StaticFiles
-app.mount("/", StaticFiles(directory=".", html=True), name="studio")
 
 
 @app.get("/assets/{filename}")
@@ -388,3 +387,5 @@ def media_health():
     return {"image": image_status(), "video": {"available": bool(shutil.which("ffmpeg"))},
             "music": {"available": True, "engine": "procedural synthesizer"},
             "render": {"available": bool(shutil.which("ffmpeg"))}}
+
+app.mount("/", StaticFiles(directory=".", html=True), name="studio")
